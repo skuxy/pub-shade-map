@@ -11,7 +11,7 @@
  * Leave it empty while developing locally — it won't be used.
  */
 
-const BACKEND_URL = '';  // e.g. 'https://pub-shade-map.onrender.com'
+const BACKEND_URL = 'pub-shade-map.duckdns.org';  // e.g. 'https://pub-shade-map.onrender.com'
 
 function getApiBase() {
   const { hostname } = window.location;
