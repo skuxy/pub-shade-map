@@ -31,3 +31,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Google Cloud SDK (installed locally, not part of project)
+google-cloud-sdk/
