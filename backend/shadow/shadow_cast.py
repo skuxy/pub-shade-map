@@ -117,6 +117,10 @@ def point_in_shadow(
     Return True if *point* (lon, lat) is covered by the shadow of at least one
     building in *buildings_near*.
 
+    Buildings whose footprint contains the pub point are skipped — that is the
+    building the pub occupies; its terrace is outside it, and including it would
+    cause the pub to always appear in shade.
+
     Args:
         point:          (lon, lat) of the pub.
         buildings_near: List of building dicts with keys "footprint" and "height".
@@ -131,6 +135,15 @@ def point_in_shadow(
     for building in buildings_near:
         footprint = building.get("footprint", [])
         height = building.get("height", 0.0)
+        if len(footprint) < 3:
+            continue
+
+        # Skip the building the pub itself occupies — its terrace is outside.
+        try:
+            if Polygon(footprint).contains(pt):
+                continue
+        except Exception:
+            continue
 
         shadow = compute_shadow_polygon(footprint, height, sun_azimuth, sun_elevation)
         if shadow is not None and shadow.contains(pt):
