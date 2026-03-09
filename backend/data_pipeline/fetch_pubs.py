@@ -7,11 +7,18 @@ Covered amenity types:
   - cafe with outdoor_seating=yes
 """
 
+import asyncio
 import httpx
 from pathlib import Path
 from .cache import DATA_DIR, save_geojson
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+]
+
+OVERPASS_URL = OVERPASS_MIRRORS[0]
 
 # Zagreb bounding box (south, west, north, east)
 BBOX = (45.72, 15.87, 45.87, 16.12)
@@ -65,16 +72,31 @@ def _element_to_feature(el: dict) -> dict | None:
 async def fetch_pubs(session: httpx.AsyncClient) -> list[dict]:
     """
     Query Overpass for pubs/bars in Zagreb and return a list of feature dicts.
-    Results are cached to data/pubs.geojson.
+    Tries multiple Overpass mirrors with retries. Results cached to data/pubs.geojson.
     """
     print("Querying Overpass API for pubs/bars …")
-    response = await session.post(
-        OVERPASS_URL,
-        data={"data": _build_query()},
-        timeout=90.0,
-    )
-    response.raise_for_status()
-    elements = response.json().get("elements", [])
+    query = _build_query()
+    last_err = None
+
+    for mirror in OVERPASS_MIRRORS:
+        for attempt in range(3):
+            try:
+                response = await session.post(
+                    mirror, data={"data": query}, timeout=120.0,
+                )
+                response.raise_for_status()
+                elements = response.json().get("elements", [])
+                break
+            except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
+                last_err = e
+                wait = 10 * (attempt + 1)
+                print(f"  [{mirror}] attempt {attempt+1} failed: {e}. Retrying in {wait}s…")
+                await asyncio.sleep(wait)
+        else:
+            continue   # this mirror failed all retries, try next
+        break          # success
+    else:
+        raise RuntimeError(f"All Overpass mirrors failed. Last error: {last_err}")
 
     features = [f for el in elements if (f := _element_to_feature(el)) is not None]
 
