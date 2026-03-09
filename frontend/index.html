@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zagreb Pub Shade Map</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <!-- Luxon (timezone-aware datetime) -->
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <div id="app">
+    <header id="header">
+      <h1>☀️ Zagreb Pub Shade Map</h1>
+      <p class="subtitle">Find out when your favourite spot is in the sun or shade</p>
+    </header>
+
+    <div id="map-container">
+      <div id="map"></div>
+
+      <!-- Side panel -->
+      <aside id="panel" class="panel-hidden">
+        <button id="panel-close" aria-label="Close panel">✕</button>
+
+        <div id="panel-content">
+          <h2 id="pub-name">Select a pub</h2>
+          <p id="pub-amenity" class="tag"></p>
+
+          <!-- Date picker -->
+          <div id="date-row">
+            <label for="date-picker">Date</label>
+            <input type="date" id="date-picker" />
+          </div>
+
+          <!-- Current status badge -->
+          <div id="status-badge" class="badge badge-hidden">
+            <span id="status-icon"></span>
+            <span id="status-text"></span>
+          </div>
+
+          <!-- Shade timeline -->
+          <section id="timeline-section">
+            <h3>Sun / Shade Timeline</h3>
+            <div id="timeline-container">
+              <canvas id="timeline-chart"></canvas>
+            </div>
+            <p id="timeline-loading" class="muted">Loading…</p>
+          </section>
+
+          <!-- Weather -->
+          <section id="weather-section">
+            <h3>3-Day Forecast</h3>
+            <div id="weather-container"></div>
+            <p id="weather-loading" class="muted">Loading…</p>
+          </section>
+        </div>
+      </aside>
+    </div>
+
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      <p>Loading pubs…</p>
+    </div>
+  </div>
+
+  <script src="js/weather.js"></script>
+  <script src="js/timeline.js"></script>
+  <script src="js/map.js"></script>
+</body>
+</html>

@@ -1,0 +1,263 @@
+/* ── Reset & base ──────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:          #0f1117;
+  --surface:     #1a1d27;
+  --surface2:    #22263a;
+  --border:      #2e3350;
+  --text:        #e2e8f0;
+  --text-muted:  #8891a5;
+  --accent:      #f6c90e;   /* sun yellow */
+  --shade-color: #3b4a6b;  /* shade blue-grey */
+  --sun-color:   #f6c90e;
+  --danger:      #e05252;
+  --radius:      10px;
+  --panel-w:     380px;
+  --header-h:    56px;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 15px;
+  color: var(--text);
+}
+
+body { background: var(--bg); height: 100dvh; overflow: hidden; }
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+#app { display: flex; flex-direction: column; height: 100dvh; }
+
+#header {
+  height: var(--header-h);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  flex-shrink: 0;
+}
+
+#header h1 { font-size: 1.15rem; font-weight: 700; color: var(--accent); white-space: nowrap; }
+#header .subtitle { font-size: 0.82rem; color: var(--text-muted); }
+
+#map-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+#map { flex: 1; }
+
+/* ── Side panel ────────────────────────────────────────────────────────── */
+#panel {
+  width: var(--panel-w);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  transition: width 0.25s ease, opacity 0.2s;
+  flex-shrink: 0;
+}
+
+#panel.panel-hidden { width: 0; opacity: 0; pointer-events: none; }
+
+#panel-close {
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 12px 16px;
+  z-index: 1;
+}
+#panel-close:hover { color: var(--text); }
+
+#panel-content { padding: 0 20px 28px; }
+
+#pub-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+
+.tag {
+  display: inline-block;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Date picker ───────────────────────────────────────────────────────── */
+#date-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+#date-row label { font-size: 0.85rem; color: var(--text-muted); }
+
+#date-picker {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 10px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+#date-picker:focus { outline: 2px solid var(--accent); }
+
+/* ── Status badge ──────────────────────────────────────────────────────── */
+.badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 20px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  transition: opacity 0.2s;
+}
+.badge-hidden { opacity: 0; pointer-events: none; height: 0; padding: 0; margin: 0; overflow: hidden; }
+.badge.in-sun  { border-color: var(--sun-color);   color: var(--sun-color); }
+.badge.in-shade { border-color: var(--shade-color); color: #aab4d0; }
+.badge.nighttime { border-color: #2a3a5a; color: var(--text-muted); }
+
+#status-icon { font-size: 1.4rem; }
+
+/* ── Section headings ──────────────────────────────────────────────────── */
+section { margin-top: 22px; }
+section h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+/* ── Timeline chart ────────────────────────────────────────────────────── */
+#timeline-container {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  min-height: 80px;
+}
+
+#timeline-chart { width: 100% !important; }
+
+/* ── Weather cards ─────────────────────────────────────────────────────── */
+#weather-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.weather-day {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+.weather-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.weather-day-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.weather-icon { font-size: 1.6rem; }
+
+.weather-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.weather-stats span strong { color: var(--text); }
+
+/* ── Misc ──────────────────────────────────────────────────────────────── */
+.muted { color: var(--text-muted); font-size: 0.85rem; padding: 8px 0; }
+
+/* ── Loading overlay ───────────────────────────────────────────────────── */
+#loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15,17,23,0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  z-index: 9999;
+  font-size: 1rem;
+  color: var(--text-muted);
+  transition: opacity 0.3s;
+}
+
+#loading-overlay.hidden { opacity: 0; pointer-events: none; }
+
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Leaflet popup overrides ───────────────────────────────────────────── */
+.leaflet-popup-content-wrapper {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  color: var(--text) !important;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.5) !important;
+}
+.leaflet-popup-tip { background: var(--surface) !important; }
+.leaflet-popup-content { margin: 10px 14px !important; }
+
+/* ── Marker icons ──────────────────────────────────────────────────────── */
+.pub-marker {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.25);
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.pub-marker:hover { transform: scale(1.4); }
+.pub-marker.sun   { background: #f6c90e; box-shadow: 0 0 6px #f6c90e88; }
+.pub-marker.shade { background: #4a5568; }
+.pub-marker.night { background: #2d4a7a; }
+.pub-marker.selected { transform: scale(1.6); border-color: white; }
+
+/* ── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  #panel { width: 100%; position: absolute; bottom: 0; left: 0; right: 0;
+           height: 60dvh; border-left: none; border-top: 1px solid var(--border); z-index: 1000; }
+  #panel.panel-hidden { width: 100%; height: 0; }
+  :root { --panel-w: 100%; }
+}
