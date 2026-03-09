@@ -6,7 +6,11 @@ import json
 import aiofiles
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
+import os
+
+# On Render, DATA_DIR env var points to the mounted persistent disk (/data).
+# Locally it defaults to the repo-level data/ directory.
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).parent.parent.parent / "data")))
 
 
 async def load_geojson(path: Path) -> dict | None:

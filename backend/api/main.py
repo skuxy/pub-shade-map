@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from data_pipeline.cache import DATA_DIR, load_geojson
+from data_pipeline.fetch_pubs import fetch_pubs
+from data_pipeline.fetch_buildings import fetch_buildings
 from shadow.shade_timeline import compute_shade_timeline
 
 # ---------------------------------------------------------------------------
@@ -87,26 +89,33 @@ def _feature_to_building(feature: dict) -> dict | None:
 async def startup() -> None:
     global _pubs, _buildings
 
-    pubs_geojson = await load_geojson(PUBS_CACHE)
-    if pubs_geojson:
-        _pubs = pubs_geojson.get("features", [])
-        print(f"[startup] Loaded {len(_pubs)} pubs from cache.")
-    else:
-        print(
-            "[startup] WARNING: data/pubs.geojson not found. "
-            "Run 'python scripts/fetch_data.py' first."
-        )
+    async with httpx.AsyncClient() as session:
+        # Auto-fetch pubs if cache is missing (e.g. fresh Render deployment)
+        pubs_geojson = await load_geojson(PUBS_CACHE)
+        if not pubs_geojson:
+            print("[startup] data/pubs.geojson not found — fetching from OSM …")
+            await fetch_pubs(session)
+            pubs_geojson = await load_geojson(PUBS_CACHE)
 
-    buildings_geojson = await load_geojson(BUILDINGS_CACHE)
-    if buildings_geojson:
-        raw = buildings_geojson.get("features", [])
-        _buildings = [b for f in raw if (b := _feature_to_building(f)) is not None]
-        print(f"[startup] Loaded {len(_buildings)} buildings from cache.")
-    else:
-        print(
-            "[startup] WARNING: data/buildings.geojson not found. "
-            "Run 'python scripts/fetch_data.py' first."
-        )
+        if pubs_geojson:
+            _pubs = pubs_geojson.get("features", [])
+            print(f"[startup] Loaded {len(_pubs)} pubs.")
+        else:
+            print("[startup] ERROR: could not load or fetch pubs.")
+
+        # Auto-fetch buildings if cache is missing
+        buildings_geojson = await load_geojson(BUILDINGS_CACHE)
+        if not buildings_geojson:
+            print("[startup] data/buildings.geojson not found — fetching from OSM …")
+            await fetch_buildings(session)
+            buildings_geojson = await load_geojson(BUILDINGS_CACHE)
+
+        if buildings_geojson:
+            raw = buildings_geojson.get("features", [])
+            _buildings = [b for f in raw if (b := _feature_to_building(f)) is not None]
+            print(f"[startup] Loaded {len(_buildings)} buildings.")
+        else:
+            print("[startup] ERROR: could not load or fetch buildings.")
 
 
 # ---------------------------------------------------------------------------

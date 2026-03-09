@@ -9,7 +9,7 @@
  */
 
 const ZAGREB = [45.815, 15.982];
-const API_BASE = '';   // same origin
+// API_BASE is defined in config.js (loaded before this script)
 
 // ── Map setup ────────────────────────────────────────────────────────────
 const map = L.map('map', {
