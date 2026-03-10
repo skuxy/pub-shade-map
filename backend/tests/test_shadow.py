@@ -21,8 +21,8 @@ from shadow.shadow_cast import compute_shadow_polygon, point_in_shadow
 
 def test_solar_noon_elevation():
     """Sun elevation at Zagreb solar noon in June should be ~65–70°."""
-    # June 21, ~10:00 UTC = ~12:00 Zagreb local (solar noon)
-    dt = datetime(2024, 6, 21, 10, 0, 0, tzinfo=timezone.utc)
+    # Zagreb lon=15.98° → solar noon at UTC = 12:00 - (15.98/15)h ≈ 10:56 UTC
+    dt = datetime(2024, 6, 21, 10, 56, 0, tzinfo=timezone.utc)
     sun = get_sun_position(dt)
     assert sun is not None, "Sun should be above horizon at noon"
     assert 60 < sun["elevation"] < 75, (
@@ -33,7 +33,8 @@ def test_solar_noon_elevation():
 
 def test_solar_noon_azimuth():
     """At solar noon in Zagreb (northern hemisphere) sun azimuth should be ~180° (south)."""
-    dt = datetime(2024, 6, 21, 10, 0, 0, tzinfo=timezone.utc)
+    # Zagreb lon=15.98° → solar noon at UTC = 12:00 - (15.98/15)h ≈ 10:56 UTC
+    dt = datetime(2024, 6, 21, 10, 56, 0, tzinfo=timezone.utc)
     sun = get_sun_position(dt)
     assert sun is not None
     # pysolar azimuth: clockwise from north. South = 180°
