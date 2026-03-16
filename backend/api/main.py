@@ -19,6 +19,8 @@ Caching:
 import asyncio
 import math
 import json
+import psutil
+import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,6 +76,12 @@ _shade_cache: dict[tuple[str, str], list[dict]] = {}
 
 # grid_key -> (fetched_at: datetime, data: dict)
 _weather_cache: dict[str, tuple[datetime, dict]] = {}
+
+# Handle for the background precompute task (cancelled on shutdown)
+_precompute_task: asyncio.Task | None = None
+
+# Startup timestamp for uptime tracking
+_started_at: datetime | None = None
 
 # Zagreb time offset (CET = UTC+1; flip to 2 in summer if needed)
 ZAGREB_UTC_OFFSET_H = 1
@@ -172,11 +180,12 @@ async def _precompute_shade() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Startup
+# Startup / shutdown
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup() -> None:
-    global _pubs, _buildings, _building_polys, _strtree
+    global _pubs, _buildings, _building_polys, _strtree, _started_at, _precompute_task
+    _started_at = datetime.now(timezone.utc)
 
     async with httpx.AsyncClient() as session:
         pubs_geojson = await load_geojson(PUBS_CACHE)
@@ -218,7 +227,19 @@ async def startup() -> None:
             print("[startup] ERROR: could not load buildings.")
 
     # Kick off pre-computation in the background (non-blocking)
-    asyncio.create_task(_precompute_shade())
+    _precompute_task = asyncio.create_task(_precompute_shade())
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global _precompute_task
+    if _precompute_task and not _precompute_task.done():
+        _precompute_task.cancel()
+        try:
+            await _precompute_task
+        except asyncio.CancelledError:
+            pass
+    print("[shutdown] Clean shutdown complete.")
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +247,42 @@ async def startup() -> None:
 # ---------------------------------------------------------------------------
 @app.get("/health")
 async def health():
+    now = datetime.now(timezone.utc)
+    uptime_s = (now - _started_at).total_seconds() if _started_at else None
+
+    mem = psutil.virtual_memory()
+    proc = psutil.Process(os.getpid())
+    proc_mem_mb = proc.memory_info().rss / 1024 / 1024
+
+    precompute_running = (
+        _precompute_task is not None
+        and not _precompute_task.done()
+    )
+
+    today = _zagreb_today()
+    dates_cached = {d for (_, d) in _shade_cache}
+    pubs_cached_today = sum(
+        1 for (_, d) in _shade_cache if d == today.isoformat()
+    )
+
     return {
         "status": "ok",
+        "uptime_seconds": round(uptime_s) if uptime_s is not None else None,
         "pubs_loaded": len(_pubs),
         "buildings_loaded": len(_buildings),
-        "shade_cache_entries": len(_shade_cache),
         "strtree_ready": _strtree is not None,
+        "shade_cache": {
+            "total_entries": len(_shade_cache),
+            "dates_covered": sorted(dates_cached),
+            "pubs_cached_today": pubs_cached_today,
+            "precompute_running": precompute_running,
+        },
+        "weather_cache_entries": len(_weather_cache),
+        "memory": {
+            "process_rss_mb": round(proc_mem_mb, 1),
+            "system_used_pct": mem.percent,
+            "system_available_mb": round(mem.available / 1024 / 1024, 1),
+        },
     }
 
 
