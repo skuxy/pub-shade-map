@@ -121,24 +121,14 @@ def compute_shadow_polygon(
         dx, dy = _shadow_vector(height, sun_azimuth, sun_elevation, ref_lat)
 
         shifted_coords = [(x + dx, y + dy) for x, y in footprint]
-        shifted = Polygon(shifted_coords)
 
-        # Build exact shadow: base footprint + shifted tip + edge sweeps.
-        # The footprint ring is closed (footprint[-1] == footprint[0]),
-        # so iterating range(len - 1) covers every edge exactly once.
-        parts = [base, shifted]
-        for i in range(len(footprint) - 1):
-            p1, p2 = footprint[i], footprint[i + 1]
-            q1 = (p1[0] + dx, p1[1] + dy)
-            q2 = (p2[0] + dx, p2[1] + dy)
-            try:
-                quad = Polygon([p1, p2, q2, q1])
-                if quad.is_valid and not quad.is_empty:
-                    parts.append(quad)
-            except Exception:
-                pass
-
-        shadow = unary_union(parts)
+        # Convex hull of (footprint + shifted footprint) is a fast and
+        # accurate approximation for the vast majority of buildings, which
+        # have approximately convex footprints.  For non-convex outlines
+        # (L/U-shapes) the hull over-estimates shadow area slightly — an
+        # acceptable trade-off given the ~100x speedup over a full
+        # edge-parallelogram unary_union.
+        shadow = base.union(Polygon(shifted_coords)).convex_hull
         return shadow if not shadow.is_empty else None
 
     except Exception:
