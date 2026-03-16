@@ -1,22 +1,34 @@
 """
 2.5D shadow polygon computation using Shapely.
 
+Shadow geometry
+───────────────
 A building is modelled as a vertical extrusion of its 2D footprint polygon.
-Given the sun's azimuth and elevation, the shadow on the ground is approximated
-as the convex hull of the footprint vertices plus the same vertices shifted by
-the shadow vector.
+For a given sun azimuth and elevation the ground shadow consists of:
 
-Coordinate system note:
-  All coordinates are (longitude, latitude) in WGS-84 degrees.
-  Shadow vectors are converted from metres to degrees using local scale factors:
-    1° latitude  ≈ 111 320 m
-    1° longitude ≈ 111 320 * cos(lat) m
+  1. The building footprint itself (the base of the extrusion).
+  2. The footprint shifted by the shadow vector (the "tip" of the shadow).
+  3. A parallelogram for each footprint edge, sweeping from the original edge
+     to the corresponding shifted edge.
 
-Shadow radius limit:
-  Nearby buildings are pre-filtered to 500 m from the pub.  At that radius a
-  10 m building would cast a significant shadow only when the sun elevation
-  is below ~1.1°.  The 500 m cutoff therefore covers all practically relevant
-  shadow sources.
+Taking the Shapely ``unary_union`` of all these parts gives the **exact**
+shadow polygon for any building shape, including non-convex outlines such as
+L-shaped or U-shaped buildings.  The earlier convex-hull approximation
+over-estimated shadow area for such shapes and is no longer used.
+
+Coordinate system
+─────────────────
+All coordinates are (longitude, latitude) in WGS-84 degrees.
+Shadow vectors are converted from metres to degrees using local scale factors:
+  1° latitude  ≈ 111 320 m
+  1° longitude ≈ 111 320 * cos(lat) m
+
+Shadow radius limit
+───────────────────
+Nearby buildings are pre-filtered to 500 m from the pub.  At that radius a
+10 m building would cast a significant shadow only when the sun elevation
+is below ~1.1°.  The 500 m cutoff therefore covers all practically relevant
+shadow sources.
 """
 
 import math
@@ -73,15 +85,29 @@ def compute_shadow_polygon(
     """
     Compute the ground shadow cast by a building.
 
+    The shadow is built as the union of:
+      - The building footprint (base).
+      - The footprint shifted by the shadow vector (tip).
+      - One parallelogram per footprint edge, sweeping the edge from its
+        original position to its shifted position.
+
+    This is the exact shadow for extruded-prism buildings and handles
+    non-convex footprints correctly (L-shapes, U-shapes, courtyards, etc.).
+    The previous convex-hull approach over-estimated shadow area for such
+    buildings and has been replaced by this method.
+
     Args:
-        footprint:     List of (lon, lat) pairs forming the building outline.
+        footprint:     List of (lon, lat) pairs forming the building outline
+                       (GeoJSON ring — last coord equals first).
         height:        Building height in metres.
-        sun_azimuth:   Sun azimuth in degrees (pysolar convention).
+        sun_azimuth:   Sun azimuth in degrees (pysolar convention,
+                       clockwise from north).
         sun_elevation: Sun elevation above horizon in degrees.
 
     Returns:
-        A Shapely Polygon representing the shadow area, or None if the sun is
-        below the minimum elevation threshold or the footprint is degenerate.
+        A Shapely geometry representing the shadow area, or None if the sun
+        is below the minimum elevation threshold or the footprint is
+        degenerate.
     """
     if sun_elevation < MIN_SUN_ELEVATION_DEG or height <= 0 or len(footprint) < 3:
         return None
@@ -91,16 +117,28 @@ def compute_shadow_polygon(
         if not base.is_valid or base.is_empty:
             return None
 
-        # Reference latitude for degree conversion (centroid)
         ref_lat = base.centroid.y
-
         dx, dy = _shadow_vector(height, sun_azimuth, sun_elevation, ref_lat)
 
-        # Shift every vertex of the footprint by the shadow vector
         shifted_coords = [(x + dx, y + dy) for x, y in footprint]
+        shifted = Polygon(shifted_coords)
 
-        # Shadow = convex hull of original footprint + shifted footprint
-        shadow = Polygon(footprint).union(Polygon(shifted_coords)).convex_hull
+        # Build exact shadow: base footprint + shifted tip + edge sweeps.
+        # The footprint ring is closed (footprint[-1] == footprint[0]),
+        # so iterating range(len - 1) covers every edge exactly once.
+        parts = [base, shifted]
+        for i in range(len(footprint) - 1):
+            p1, p2 = footprint[i], footprint[i + 1]
+            q1 = (p1[0] + dx, p1[1] + dy)
+            q2 = (p2[0] + dx, p2[1] + dy)
+            try:
+                quad = Polygon([p1, p2, q2, q1])
+                if quad.is_valid and not quad.is_empty:
+                    parts.append(quad)
+            except Exception:
+                pass
+
+        shadow = unary_union(parts)
         return shadow if not shadow.is_empty else None
 
     except Exception:

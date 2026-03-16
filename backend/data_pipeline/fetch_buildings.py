@@ -1,34 +1,46 @@
 """
-Fetch building footprints with heights from OpenStreetMap via Overpass API
-and cache them as a GeoJSON FeatureCollection.
+Fetch building footprints with heights and cache them as a GeoJSON
+FeatureCollection.
 
-Height resolution priority:
-  1. `height` tag (metres, float)
-  2. `building:levels` * 3.0 m  (standard floor height estimate)
-  3. Fallback: 8.0 m (~2 storeys)
+Data source selection
+─────────────────────
+Two sources are supported, selected by the ``USE_DKP_FOOTPRINTS`` environment
+variable:
 
-Upgrade path — Zagreb Official 3D Data (ArcGIS ZG3D):
-  The City of Zagreb publishes LoD 2.2 3D building meshes covering all 15
-  city districts from a 2022-2023 multisensor survey. Each Scene Service
-  exposes Z_Min / Z_Max attributes per mesh node, giving precise absolute
-  building heights.
+  USE_DKP_FOOTPRINTS=0 (default)
+    OpenStreetMap via Overpass API.  Height resolution priority:
+      1. ``height`` tag (metres, float)
+      2. ``building:levels`` × 3.0 m  (standard floor-height estimate)
+      3. Fallback: 8.0 m (~2 storeys)
 
-  Base URL:
-    https://services8.arcgis.com/Usi0jGQwMmBUpFjr/arcgis/rest/services/
-    ZG3D_GC_{district}_2022/SceneServer
+  USE_DKP_FOOTPRINTS=1
+    City of Zagreb DKP (Digital Cadastral Plan) FeatureServer.
+    Footprint polygons come from official land-survey records and are
+    generally more accurate than OSM.  Heights are estimated from the
+    building-type (VRSTA) field and enriched with OSM height tags via a
+    Shapely spatial join (see ``fetch_buildings_dkp.py`` for details).
 
-  Districts:
-    Pescenica_Zitnjak, Gornji_Grad, Novi_Zagreb_zapad, Trnje, Brezovica,
-    Novi_Zagreb_istok, Donja_Dubrava, Tresnjevka_jug, Crnomerec, Sesvete,
-    Podsused_Vrapce, Gornja_Dubrava, Donji_Grad, Maksimir, Podsljeme
+ZG3D upgrade path
+─────────────────
+The City of Zagreb also publishes LoD 2.2 3D building meshes covering all 15
+city districts from a 2022–2023 multisensor survey (Z_Min / Z_Max per mesh
+node).  These would give precise surveyed heights.
 
-  To integrate: query each SceneServer /layers/0/query endpoint, extract
-  (Z_Max - Z_Min) as building height, and join to the DKP footprint layer
-  (services8.arcgis.com/.../zgrada_DKP_prikaz_k1/FeatureServer) by spatial
-  intersection. Replace the OSM building list below with the merged result.
+  Hub:      https://zg3d-zagreb.hub.arcgis.com/
+  Base URL: https://services8.arcgis.com/Usi0jGQwMmBUpFjr/arcgis/rest/services/
+            ZG3D_GC_{district}_2022/SceneServer
+  Districts: Pescenica_Zitnjak, Gornji_Grad, Novi_Zagreb_zapad, Trnje,
+             Brezovica, Novi_Zagreb_istok, Donja_Dubrava, Tresnjevka_jug,
+             Crnomerec, Sesvete, Podsused_Vrapce, Gornja_Dubrava, Donji_Grad,
+             Maksimir, Podsljeme
+
+  Status: SceneServer endpoints currently return HTTP 400 "Invalid URL".
+  Once access is restored, replace the height values with (Z_Max − Z_Min)
+  from those services, joined to the DKP footprints by spatial intersection.
 """
 
 import asyncio
+import os
 import httpx
 from pathlib import Path
 from .cache import DATA_DIR, save_geojson
@@ -128,9 +140,36 @@ def _way_to_feature(el: dict) -> dict | None:
 
 async def fetch_buildings(session: httpx.AsyncClient) -> list[dict]:
     """
-    Query Overpass for building footprints in Zagreb and return a list of
-    GeoJSON features. Tries multiple mirrors with retries. Cached to data/buildings.geojson.
+    Fetch building footprints for Zagreb and cache to ``data/buildings.geojson``.
+
+    If the environment variable ``USE_DKP_FOOTPRINTS=1`` is set, the City of
+    Zagreb DKP cadastral layer is used instead of Overpass.  OSM is always
+    fetched first when using DKP so that OSM heights can enrich the DKP data.
+
+    Falls back to Overpass if the DKP fetch fails.
     """
+    if os.environ.get("USE_DKP_FOOTPRINTS", "0") == "1":
+        try:
+            from .fetch_buildings_dkp import fetch_buildings_dkp, BUILDINGS_DKP_CACHE
+            print("[buildings] USE_DKP_FOOTPRINTS=1 — fetching from DKP …")
+            # Ensure OSM cache exists so DKP enrichment can use OSM heights.
+            if not (DATA_DIR / "buildings.geojson").exists():
+                print("[buildings] Fetching OSM buildings first (for height enrichment) …")
+                await _fetch_osm_buildings(session)
+            features = await fetch_buildings_dkp(session, enrich_from_osm=True)
+            # Point the main cache file at the DKP result.
+            import shutil
+            shutil.copy2(str(BUILDINGS_DKP_CACHE), str(BUILDINGS_CACHE))
+            print(f"[buildings] DKP buildings written to {BUILDINGS_CACHE}")
+            return features
+        except Exception as exc:
+            print(f"[buildings] DKP fetch failed ({exc}), falling back to OSM.")
+
+    return await _fetch_osm_buildings(session)
+
+
+async def _fetch_osm_buildings(session: httpx.AsyncClient) -> list[dict]:
+    """Query Overpass for building footprints in Zagreb. Cached to data/buildings.geojson."""
     print("Querying Overpass API for buildings …")
     query = _build_query()
     last_err = None

@@ -25,6 +25,14 @@
     <header id="header">
       <h1>☀️ Zagreb Pub Shade Map</h1>
       <p class="subtitle">Find out when your favourite spot is in the sun or shade</p>
+
+      <!-- Filter controls — right-aligned in the header -->
+      <div id="filter-bar">
+        <span class="filter-label">Show:</span>
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="sun">☀️ In sun</button>
+        <button class="filter-btn" data-filter="shade">🌑 In shade</button>
+      </div>
     </header>
 
     <div id="map-container">
@@ -37,6 +45,8 @@
         <div id="panel-content">
           <h2 id="pub-name">Select a pub</h2>
           <p id="pub-amenity" class="tag"></p>
+          <!-- Sunny score badge (shown when data is available) -->
+          <span id="pub-sunny-score" class="sunny-score" style="display:none"></span>
 
           <!-- Date picker -->
           <div id="date-row">
@@ -57,6 +67,8 @@
               <canvas id="timeline-chart"></canvas>
             </div>
             <p id="timeline-loading" class="muted">Loading…</p>
+            <!-- Summary: hours in sun/shade + opening hours -->
+            <p id="timeline-summary" class="timeline-summary muted"></p>
           </section>
 
           <!-- Weather -->

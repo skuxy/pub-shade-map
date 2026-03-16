@@ -2,18 +2,38 @@
 FastAPI application — serves pub shade data, weather proxying, and the
 frontend static files.
 
-Startup:
-  1. Loads (or auto-fetches) pubs + buildings into memory.
-  2. Builds a Shapely STRtree spatial index over building footprints so that
-     nearby-building lookups are O(log n) instead of O(n).
-  3. Kicks off a background task that pre-computes shade timelines for all
-     pubs for today and the next 3 days, storing results in _shade_cache.
+Startup sequence
+────────────────
+1. Load (or auto-fetch) pubs + buildings into memory.
+   OSM cache files are considered stale after CACHE_MAX_AGE_DAYS days and
+   are re-fetched automatically.
+2. Build a Shapely STRtree spatial index over building footprints so that
+   nearby-building lookups are O(log n) instead of O(n).
+3. Pre-compute building centroids once so the directional shadow filter in
+   shadow_cast.py does not recompute them on every call.
+4. Kick off a background task that pre-computes shade timelines for all pubs
+   for today and the next PRECOMPUTE_DAYS days, storing results in
+   _shade_cache.  Up to PRECOMPUTE_WORKERS timelines are computed in
+   parallel (Shapely releases the GIL so true parallelism is possible).
 
-Caching:
-  - Shade timelines: in-memory dict keyed by (pub_id, date). Shade for a
-    given date is deterministic and never changes, so no TTL is needed.
-  - Weather: in-memory dict keyed by a ~1 km grid cell (2 d.p. lat/lon),
-    cached for WEATHER_CACHE_TTL_S seconds (1 hour by default).
+Caching
+───────
+- Shade timelines: in-memory dict keyed by (pub_id, date_iso).  Shade for
+  a given date is deterministic and never changes, so no TTL is needed.
+  Timelines are also persisted to SHADE_CACHE_DIR/{date}.json so that
+  restarts do not require recomputation.
+- Sunny scores: derived from shade timelines (% of daylight steps in sun),
+  stored in _sunny_scores keyed by (pub_id, date_iso).
+- Weather: in-memory dict keyed by a ~1 km grid cell (2 d.p. lat/lon),
+  cached for WEATHER_CACHE_TTL_S seconds (1 hour by default).
+
+Timezone
+────────
+Croatia observes CET (UTC+1) in winter and CEST (UTC+2) in summer.  The
+``_zagreb_today()`` helper uses ``zoneinfo.ZoneInfo('Europe/Zagreb')`` so
+it returns the correct local date regardless of DST.  A hardcoded
+UTC+1 offset would return the wrong date between midnight and 1 AM during
+CEST (late March – late October).
 """
 
 import asyncio
@@ -23,10 +43,11 @@ import psutil
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiofiles
 import httpx
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,16 +60,19 @@ from data_pipeline.fetch_buildings import fetch_buildings
 from shadow.shade_timeline import compute_shade_timeline, find_nearby_buildings, BUILDING_SEARCH_RADIUS_M
 
 # ---------------------------------------------------------------------------
-# Paths
+# Configuration
 # ---------------------------------------------------------------------------
 FRONTEND_DIR    = Path(__file__).parent.parent.parent / "frontend"
 PUBS_CACHE      = DATA_DIR / "pubs.geojson"
 BUILDINGS_CACHE = DATA_DIR / "buildings.geojson"
 
-WEATHER_CACHE_TTL_S  = 3600   # 1 hour
-PRECOMPUTE_DAYS      = 3      # pre-compute today + next N days
-PRECOMPUTE_WORKERS   = 4      # concurrent shade timelines (shapely releases GIL)
+WEATHER_CACHE_TTL_S  = 3600   # seconds — weather forecast TTL
+PRECOMPUTE_DAYS      = 3      # pre-compute shade for today + this many days
+PRECOMPUTE_WORKERS   = 4      # concurrent shade computations (Shapely releases GIL)
 SHADE_CACHE_DIR      = DATA_DIR / "shade_cache"
+CACHE_MAX_AGE_DAYS   = 7      # re-fetch OSM data after this many days
+
+ZAGREB_TZ = ZoneInfo("Europe/Zagreb")
 
 # ---------------------------------------------------------------------------
 # App
@@ -74,8 +98,11 @@ _buildings: list[dict] = []
 _building_polys: list[Polygon] = []   # parallel to _buildings, for STRtree
 _strtree: STRtree | None = None        # spatial index
 
-# (pub_id, date_iso) -> timeline list
+# (pub_id, date_iso) -> shade timeline list
 _shade_cache: dict[tuple[str, str], list[dict]] = {}
+
+# (pub_id, date_iso) -> % of daylight steps where pub is in sun (0–100)
+_sunny_scores: dict[tuple[str, str], int] = {}
 
 # grid_key -> (fetched_at: datetime, data: dict)
 _weather_cache: dict[str, tuple[datetime, dict]] = {}
@@ -86,13 +113,26 @@ _precompute_task: asyncio.Task | None = None
 # Startup timestamp for uptime tracking
 _started_at: datetime | None = None
 
-# Zagreb time offset (CET = UTC+1; flip to 2 in summer if needed)
-ZAGREB_UTC_OFFSET_H = 1
-
 
 def _zagreb_today() -> date:
-    now_utc = datetime.now(timezone.utc)
-    return (now_utc + timedelta(hours=ZAGREB_UTC_OFFSET_H)).date()
+    """Return today's date in the Europe/Zagreb timezone (DST-aware)."""
+    return datetime.now(ZAGREB_TZ).date()
+
+
+def _osm_cache_is_stale(path: Path) -> bool:
+    """Return True if *path* does not exist or is older than CACHE_MAX_AGE_DAYS."""
+    if not path.exists():
+        return True
+    age_s = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
+    return age_s > CACHE_MAX_AGE_DAYS * 86_400
+
+
+def _compute_sunny_score(timeline: list[dict]) -> int:
+    """Return the percentage of daylight steps where the pub is in sun (0–100)."""
+    if not timeline:
+        return 0
+    sun_steps = sum(1 for t in timeline if not t["in_shade"])
+    return round(sun_steps / len(timeline) * 100)
 
 
 def _feature_to_building(feature: dict) -> dict | None:
@@ -148,7 +188,10 @@ async def _save_shade_cache(target_date: date) -> None:
 
 
 async def _load_shade_cache(target_date: date) -> int:
-    """Load cached timelines for *target_date* from disk into _shade_cache."""
+    """
+    Load cached timelines for *target_date* from disk into _shade_cache and
+    rebuild _sunny_scores for each loaded entry.
+    """
     cache_file = SHADE_CACHE_DIR / f"{target_date.isoformat()}.json"
     if not cache_file.exists():
         return 0
@@ -158,6 +201,7 @@ async def _load_shade_cache(target_date: date) -> int:
         date_str = target_date.isoformat()
         for pub_id, timeline in data.items():
             _shade_cache[(pub_id, date_str)] = timeline
+            _sunny_scores[(pub_id, date_str)] = _compute_sunny_score(timeline)
         print(f"[cache] Loaded {len(data)} timelines from disk for {target_date}")
         return len(data)
     except Exception as exc:
@@ -214,6 +258,7 @@ async def _precompute_shade() -> None:
                 return
             timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby)
             _shade_cache[cache_key] = timeline
+            _sunny_scores[cache_key] = _compute_sunny_score(timeline)
             progress[0] += 1
             if progress[0] % 100 == 0:
                 print(f"[precompute] {progress[0]}/{total} …")
@@ -244,22 +289,20 @@ async def startup() -> None:
     _started_at = datetime.now(timezone.utc)
 
     async with httpx.AsyncClient() as session:
-        pubs_geojson = await load_geojson(PUBS_CACHE)
-        if not pubs_geojson:
-            print("[startup] Fetching pubs from OSM …")
+        if _osm_cache_is_stale(PUBS_CACHE):
+            print(f"[startup] Pubs cache missing or >{CACHE_MAX_AGE_DAYS}d old — fetching from OSM …")
             await fetch_pubs(session)
-            pubs_geojson = await load_geojson(PUBS_CACHE)
+        pubs_geojson = await load_geojson(PUBS_CACHE)
         if pubs_geojson:
             _pubs = pubs_geojson.get("features", [])
             print(f"[startup] Loaded {len(_pubs)} pubs.")
         else:
             print("[startup] ERROR: could not load pubs.")
 
-        buildings_geojson = await load_geojson(BUILDINGS_CACHE)
-        if not buildings_geojson:
-            print("[startup] Fetching buildings from OSM …")
+        if _osm_cache_is_stale(BUILDINGS_CACHE):
+            print(f"[startup] Buildings cache missing or >{CACHE_MAX_AGE_DAYS}d old — fetching from OSM …")
             await fetch_buildings(session)
-            buildings_geojson = await load_geojson(BUILDINGS_CACHE)
+        buildings_geojson = await load_geojson(BUILDINGS_CACHE)
         if buildings_geojson:
             raw = buildings_geojson.get("features", [])
             _buildings = [b for f in raw if (b := _feature_to_building(f)) is not None]
@@ -352,8 +395,26 @@ async def health():
 
 @app.get("/api/pubs")
 async def get_pubs():
-    """Return all pubs as a GeoJSON FeatureCollection."""
-    return JSONResponse({"type": "FeatureCollection", "features": _pubs})
+    """
+    Return all pubs as a GeoJSON FeatureCollection.
+
+    Each feature's ``properties`` includes ``sunny_score_today`` (0–100) when
+    the shade timeline for today has already been pre-computed.  The frontend
+    uses this to colour markers and populate the filter/sort controls without
+    needing per-pub ``/api/shade`` calls.
+    """
+    today_iso = _zagreb_today().isoformat()
+    features = []
+    for pub in _pubs:
+        pub_id = pub["properties"]["id"]
+        score  = _sunny_scores.get((pub_id, today_iso))
+        if score is not None:
+            # Shallow copy — do not mutate the in-memory pub dict.
+            f = {**pub, "properties": {**pub["properties"], "sunny_score_today": score}}
+        else:
+            f = pub
+        features.append(f)
+    return JSONResponse({"type": "FeatureCollection", "features": features})
 
 
 @app.get("/api/shade/{pub_id:path}")
@@ -388,13 +449,15 @@ async def get_shade(
         nearby  = _get_nearby_buildings(pub_lon, pub_lat)
         timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby)
         _shade_cache[cache_key] = timeline
+        _sunny_scores[cache_key] = _compute_sunny_score(timeline)
 
     return {
-        "pub_id":      pub_id,
-        "pub_name":    pub["properties"].get("name", ""),
-        "date":        target_date.isoformat(),
+        "pub_id":       pub_id,
+        "pub_name":     pub["properties"].get("name", ""),
+        "date":         target_date.isoformat(),
         "step_minutes": 5,
-        "timeline":    _shade_cache[cache_key],
+        "sunny_pct":    _sunny_scores.get(cache_key, 0),
+        "timeline":     _shade_cache[cache_key],
     }
 
 
@@ -434,6 +497,100 @@ async def get_weather(
             return JSONResponse(data)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Weather API error: {exc}")
+
+
+@app.get("/api/current-status")
+async def get_current_status():
+    """
+    Return the current sun/shade status and today's sunny score for every pub
+    in a single response.
+
+    The frontend calls this endpoint once on load (and every 5 minutes) instead
+    of issuing one ``/api/shade`` request per pub — replacing ~440 individual
+    calls with a single round-trip.
+
+    Response shape::
+
+        {
+          "as_of": "2026-03-16T10:30:00+00:00",
+          "pubs": {
+            "<pub_id>": {
+              "status":           "sun" | "shade" | "night" | "unknown",
+              "sunny_score_today": 0–100   (omitted if not yet computed)
+            },
+            ...
+          }
+        }
+    """
+    now_utc  = datetime.now(timezone.utc)
+    today    = _zagreb_today()
+    date_iso = today.isoformat()
+    # Pre-compute the ISO string of "now" once for comparisons below.
+    now_iso  = now_utc.isoformat()
+
+    pubs_status: dict[str, dict] = {}
+    for pub in _pubs:
+        pub_id    = pub["properties"]["id"]
+        cache_key = (pub_id, date_iso)
+        timeline  = _shade_cache.get(cache_key)
+
+        if not timeline:
+            entry = {"status": "unknown"}
+        else:
+            # Find first timeline entry at or after the current UTC time.
+            current = next((t for t in timeline if t["time"] >= now_iso), None)
+            if current is None:
+                entry = {"status": "night"}
+            else:
+                entry = {"status": "shade" if current["in_shade"] else "sun"}
+
+        score = _sunny_scores.get(cache_key)
+        if score is not None:
+            entry["sunny_score_today"] = score
+
+        pubs_status[pub_id] = entry
+
+    return JSONResponse({"as_of": now_iso, "pubs": pubs_status})
+
+
+@app.post("/api/admin/refresh")
+async def admin_refresh(key: str = Query(..., description="REFRESH_KEY env var value")):
+    """
+    Force a full OSM data re-fetch and rebuild the in-memory state.
+
+    Requires the ``key`` query parameter to match the ``REFRESH_KEY``
+    environment variable.  Set it on the server to prevent unauthorised
+    re-fetches (which are slow and hit the Overpass API).
+
+    Use this after OSM data has been updated and you want the map to reflect
+    the changes without waiting for the 7-day cache TTL.
+
+    Example::
+
+        POST /api/admin/refresh?key=<your-secret>
+    """
+    global _pubs, _buildings, _building_polys, _strtree, _precompute_task
+
+    expected_key = os.environ.get("REFRESH_KEY", "")
+    if not expected_key or key != expected_key:
+        raise HTTPException(status_code=403, detail="Invalid or missing REFRESH_KEY")
+
+    # Cancel any running precompute before wiping state.
+    if _precompute_task and not _precompute_task.done():
+        _precompute_task.cancel()
+        try:
+            await _precompute_task
+        except asyncio.CancelledError:
+            pass
+
+    # Delete OSM caches so startup() re-fetches them.
+    for f in [PUBS_CACHE, BUILDINGS_CACHE]:
+        if f.exists():
+            f.unlink()
+
+    # Re-run the full startup sequence.
+    await startup()
+    return {"status": "refreshed", "pubs": len(_pubs), "buildings": len(_buildings)}
 
 
 # ---------------------------------------------------------------------------

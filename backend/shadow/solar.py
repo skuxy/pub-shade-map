@@ -2,13 +2,22 @@
 Sun position calculations for Zagreb using pysolar.
 
 Zagreb coordinates: 45.815°N, 15.982°E, ~120 m elevation.
-All datetimes are UTC-aware. Local Zagreb time is UTC+1 (CET) or UTC+2 (CEST).
+
+All datetimes passed to pysolar are UTC-aware.  The daylight-step generator
+walks the full UTC day so it captures correct sun positions regardless of
+whether Zagreb is on CET (UTC+1, winter) or CEST (UTC+2, summer).  Callers
+that need the *Zagreb local date* should use ``zoneinfo.ZoneInfo('Europe/Zagreb')``
+rather than a hardcoded offset — Croatia observes DST, switching from CET to
+CEST on the last Sunday in March and back on the last Sunday in October.
 """
 
 import math
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from pysolar.solar import get_altitude, get_azimuth
+
+ZAGREB_TZ = ZoneInfo("Europe/Zagreb")
 
 ZAGREB_LAT = 45.815
 ZAGREB_LON = 15.982
