@@ -2,31 +2,48 @@
 FastAPI application — serves pub shade data, weather proxying, and the
 frontend static files.
 
-Startup loads pubs and buildings into memory from their GeoJSON caches
-so that shade requests are fast without repeated disk I/O.
+Startup:
+  1. Loads (or auto-fetches) pubs + buildings into memory.
+  2. Builds a Shapely STRtree spatial index over building footprints so that
+     nearby-building lookups are O(log n) instead of O(n).
+  3. Kicks off a background task that pre-computes shade timelines for all
+     pubs for today and the next 3 days, storing results in _shade_cache.
+
+Caching:
+  - Shade timelines: in-memory dict keyed by (pub_id, date). Shade for a
+    given date is deterministic and never changes, so no TTL is needed.
+  - Weather: in-memory dict keyed by a ~1 km grid cell (2 d.p. lat/lon),
+    cached for WEATHER_CACHE_TTL_S seconds (1 hour by default).
 """
 
+import asyncio
+import math
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from shapely.geometry import box as shapely_box, Polygon
+from shapely import STRtree
 
 from data_pipeline.cache import DATA_DIR, load_geojson
 from data_pipeline.fetch_pubs import fetch_pubs
 from data_pipeline.fetch_buildings import fetch_buildings
-from shadow.shade_timeline import compute_shade_timeline
+from shadow.shade_timeline import compute_shade_timeline, find_nearby_buildings, BUILDING_SEARCH_RADIUS_M
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend"
-PUBS_CACHE    = DATA_DIR / "pubs.geojson"
+FRONTEND_DIR    = Path(__file__).parent.parent.parent / "frontend"
+PUBS_CACHE      = DATA_DIR / "pubs.geojson"
 BUILDINGS_CACHE = DATA_DIR / "buildings.geojson"
+
+WEATHER_CACHE_TTL_S = 3600   # 1 hour
+PRECOMPUTE_DAYS     = 3      # pre-compute today + next N days
 
 # ---------------------------------------------------------------------------
 # App
@@ -45,41 +62,104 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# In-memory state (populated on startup)
+# In-memory state
 # ---------------------------------------------------------------------------
-_pubs: list[dict] = []       # GeoJSON features
-_buildings: list[dict] = []  # dicts with footprint + height
+_pubs: list[dict] = []
+_buildings: list[dict] = []
+_building_polys: list[Polygon] = []   # parallel to _buildings, for STRtree
+_strtree: STRtree | None = None        # spatial index
 
-# Zagreb time offset (approximate — does not handle DST boundary automatically)
-ZAGREB_UTC_OFFSET_H = 1  # CET; use 2 for CEST (summer)
+# (pub_id, date_iso) -> timeline list
+_shade_cache: dict[tuple[str, str], list[dict]] = {}
+
+# grid_key -> (fetched_at: datetime, data: dict)
+_weather_cache: dict[str, tuple[datetime, dict]] = {}
+
+# Zagreb time offset (CET = UTC+1; flip to 2 in summer if needed)
+ZAGREB_UTC_OFFSET_H = 1
 
 
 def _zagreb_today() -> date:
-    """Return today's date in Zagreb local time (approximate, ignores DST)."""
     now_utc = datetime.now(timezone.utc)
-    return (now_utc.replace(hour=(now_utc.hour + ZAGREB_UTC_OFFSET_H) % 24)).date()
+    return (now_utc + timedelta(hours=ZAGREB_UTC_OFFSET_H)).date()
 
 
 def _feature_to_building(feature: dict) -> dict | None:
-    """Convert a GeoJSON building feature to the internal building dict."""
-    geom = feature.get("geometry", {})
+    geom  = feature.get("geometry", {})
     props = feature.get("properties", {})
-
     if geom.get("type") != "Polygon":
         return None
-
     rings = geom.get("coordinates", [])
     if not rings:
         return None
-
     footprint = [(c[0], c[1]) for c in rings[0]]
     height = float(props.get("height", 8.0))
+    return {"id": props.get("id", ""), "footprint": footprint, "height": height}
 
-    return {
-        "id": props.get("id", ""),
-        "footprint": footprint,
-        "height": height,
-    }
+
+def _get_nearby_buildings(pub_lon: float, pub_lat: float) -> list[dict]:
+    """
+    Return buildings within BUILDING_SEARCH_RADIUS_M of (pub_lon, pub_lat).
+
+    Uses the STRtree spatial index when available (fast path), falling back
+    to the brute-force haversine scan otherwise.
+    """
+    if _strtree is None or not _building_polys:
+        return find_nearby_buildings(pub_lon, pub_lat, _buildings)
+
+    # Convert radius to approximate degree offsets for a bounding-box query
+    lat_deg = BUILDING_SEARCH_RADIUS_M / 111_320.0
+    lon_deg = BUILDING_SEARCH_RADIUS_M / (111_320.0 * math.cos(math.radians(pub_lat)))
+    search_box = shapely_box(
+        pub_lon - lon_deg, pub_lat - lat_deg,
+        pub_lon + lon_deg, pub_lat + lat_deg,
+    )
+    indices = _strtree.query(search_box)
+    return [_buildings[i] for i in indices]
+
+
+# ---------------------------------------------------------------------------
+# Background pre-computation
+# ---------------------------------------------------------------------------
+async def _precompute_shade() -> None:
+    """Pre-compute shade timelines for all pubs for today + PRECOMPUTE_DAYS."""
+    if not _pubs or not _buildings:
+        return
+
+    today = _zagreb_today()
+    dates = [today + timedelta(days=i) for i in range(PRECOMPUTE_DAYS)]
+    total = len(_pubs) * len(dates)
+    done  = 0
+
+    print(f"[precompute] Starting shade pre-computation: {len(_pubs)} pubs × {len(dates)} days …")
+
+    for pub in _pubs:
+        pub_id = pub["properties"]["id"]
+        coords = pub["geometry"]["coordinates"]
+        pub_lon, pub_lat = float(coords[0]), float(coords[1])
+        nearby = _get_nearby_buildings(pub_lon, pub_lat)
+
+        for target_date in dates:
+            cache_key = (pub_id, target_date.isoformat())
+            if cache_key in _shade_cache:
+                done += 1
+                continue
+
+            # Yield to the event loop between pubs so the API stays responsive
+            await asyncio.sleep(0)
+
+            timeline = compute_shade_timeline(
+                pub, _buildings, target_date,
+                step_minutes=5,
+                nearby_buildings=nearby,
+            )
+            _shade_cache[cache_key] = timeline
+            done += 1
+
+        if done % 50 == 0:
+            print(f"[precompute] {done}/{total} timelines cached …")
+
+    print(f"[precompute] Done. {done} timelines in cache.")
 
 
 # ---------------------------------------------------------------------------
@@ -87,35 +167,49 @@ def _feature_to_building(feature: dict) -> dict | None:
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup() -> None:
-    global _pubs, _buildings
+    global _pubs, _buildings, _building_polys, _strtree
 
     async with httpx.AsyncClient() as session:
-        # Auto-fetch pubs if cache is missing (e.g. fresh Render deployment)
         pubs_geojson = await load_geojson(PUBS_CACHE)
         if not pubs_geojson:
-            print("[startup] data/pubs.geojson not found — fetching from OSM …")
+            print("[startup] Fetching pubs from OSM …")
             await fetch_pubs(session)
             pubs_geojson = await load_geojson(PUBS_CACHE)
-
         if pubs_geojson:
             _pubs = pubs_geojson.get("features", [])
             print(f"[startup] Loaded {len(_pubs)} pubs.")
         else:
-            print("[startup] ERROR: could not load or fetch pubs.")
+            print("[startup] ERROR: could not load pubs.")
 
-        # Auto-fetch buildings if cache is missing
         buildings_geojson = await load_geojson(BUILDINGS_CACHE)
         if not buildings_geojson:
-            print("[startup] data/buildings.geojson not found — fetching from OSM …")
+            print("[startup] Fetching buildings from OSM …")
             await fetch_buildings(session)
             buildings_geojson = await load_geojson(BUILDINGS_CACHE)
-
         if buildings_geojson:
             raw = buildings_geojson.get("features", [])
             _buildings = [b for f in raw if (b := _feature_to_building(f)) is not None]
             print(f"[startup] Loaded {len(_buildings)} buildings.")
+
+            # Build STRtree spatial index
+            _building_polys = []
+            valid_buildings  = []
+            for b in _buildings:
+                try:
+                    poly = Polygon(b["footprint"])
+                    if poly.is_valid and not poly.is_empty:
+                        _building_polys.append(poly)
+                        valid_buildings.append(b)
+                except Exception:
+                    pass
+            _buildings = valid_buildings
+            _strtree = STRtree(_building_polys)
+            print(f"[startup] STRtree built over {len(_building_polys)} building polygons.")
         else:
-            print("[startup] ERROR: could not load or fetch buildings.")
+            print("[startup] ERROR: could not load buildings.")
+
+    # Kick off pre-computation in the background (non-blocking)
+    asyncio.create_task(_precompute_shade())
 
 
 # ---------------------------------------------------------------------------
@@ -127,16 +221,15 @@ async def health():
         "status": "ok",
         "pubs_loaded": len(_pubs),
         "buildings_loaded": len(_buildings),
+        "shade_cache_entries": len(_shade_cache),
+        "strtree_ready": _strtree is not None,
     }
 
 
 @app.get("/api/pubs")
 async def get_pubs():
     """Return all pubs as a GeoJSON FeatureCollection."""
-    return JSONResponse({
-        "type": "FeatureCollection",
-        "features": _pubs,
-    })
+    return JSONResponse({"type": "FeatureCollection", "features": _pubs})
 
 
 @app.get("/api/shade/{pub_id:path}")
@@ -146,10 +239,8 @@ async def get_shade(
 ):
     """
     Return the sun/shade timeline for *pub_id* on *date_str* (YYYY-MM-DD).
-
-    If no date is supplied the timeline is computed for today in Zagreb time.
+    Served from cache when available; computed on demand otherwise.
     """
-    # Resolve date
     if date_str:
         try:
             target_date = date.fromisoformat(date_str)
@@ -158,29 +249,32 @@ async def get_shade(
     else:
         target_date = _zagreb_today()
 
-    # Find the pub
-    pub = next(
-        (f for f in _pubs if f["properties"]["id"] == pub_id),
-        None,
-    )
+    pub = next((f for f in _pubs if f["properties"]["id"] == pub_id), None)
     if pub is None:
         raise HTTPException(status_code=404, detail=f"Pub '{pub_id}' not found")
 
     if not _buildings:
-        raise HTTPException(
-            status_code=503,
-            detail="Building data not loaded — run fetch_data.py first",
-        )
+        raise HTTPException(status_code=503, detail="Building data not loaded")
 
-    # Compute timeline
-    timeline = compute_shade_timeline(pub, _buildings, target_date, step_minutes=5)
+    cache_key = (pub_id, target_date.isoformat())
+
+    if cache_key not in _shade_cache:
+        coords  = pub["geometry"]["coordinates"]
+        pub_lon, pub_lat = float(coords[0]), float(coords[1])
+        nearby  = _get_nearby_buildings(pub_lon, pub_lat)
+        timeline = compute_shade_timeline(
+            pub, _buildings, target_date,
+            step_minutes=5,
+            nearby_buildings=nearby,
+        )
+        _shade_cache[cache_key] = timeline
 
     return {
-        "pub_id": pub_id,
-        "pub_name": pub["properties"].get("name", ""),
-        "date": target_date.isoformat(),
+        "pub_id":      pub_id,
+        "pub_name":    pub["properties"].get("name", ""),
+        "date":        target_date.isoformat(),
         "step_minutes": 5,
-        "timeline": timeline,
+        "timeline":    _shade_cache[cache_key],
     }
 
 
@@ -190,11 +284,19 @@ async def get_weather(
     lon: float = Query(..., description="Longitude"),
 ):
     """
-    Proxy a 3-day hourly weather forecast from Open-Meteo for (lat, lon).
-
-    Variables returned: temperature_2m, precipitation_probability,
-    weathercode, cloudcover, windspeed_10m.
+    Proxy a 3-day hourly weather forecast from Open-Meteo.
+    Results are cached per ~1 km grid cell for WEATHER_CACHE_TTL_S seconds.
     """
+    # Round to 2 d.p. ≈ ~1 km grid cell
+    grid_key = f"{round(lat, 2)}_{round(lon, 2)}"
+    now = datetime.now(timezone.utc)
+
+    cached = _weather_cache.get(grid_key)
+    if cached:
+        fetched_at, data = cached
+        if (now - fetched_at).total_seconds() < WEATHER_CACHE_TTL_S:
+            return JSONResponse(data)
+
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
@@ -207,7 +309,9 @@ async def get_weather(
         try:
             resp = await client.get(url, timeout=10.0)
             resp.raise_for_status()
-            return JSONResponse(resp.json())
+            data = resp.json()
+            _weather_cache[grid_key] = (now, data)
+            return JSONResponse(data)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Weather API error: {exc}")
 

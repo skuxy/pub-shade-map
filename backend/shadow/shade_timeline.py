@@ -67,15 +67,18 @@ def compute_shade_timeline(
     buildings: list[dict],
     target_date: date,
     step_minutes: int = 5,
+    nearby_buildings: list[dict] | None = None,
 ) -> list[dict]:
     """
     Compute the sun/shade timeline for *pub* on *target_date*.
 
     Args:
-        pub:          GeoJSON Feature dict for the pub (must have geometry.coordinates).
-        buildings:    Full list of building dicts loaded from cache.
-        target_date:  The date to evaluate.
-        step_minutes: Time resolution in minutes (default 5).
+        pub:               GeoJSON Feature dict for the pub (must have geometry.coordinates).
+        buildings:         Full list of building dicts loaded from cache.
+        target_date:       The date to evaluate.
+        step_minutes:      Time resolution in minutes (default 5).
+        nearby_buildings:  Pre-filtered list of nearby buildings (skips find_nearby_buildings
+                           if provided — pass this when using a spatial index in the caller).
 
     Returns:
         List of dicts, one per daylight step:
@@ -89,7 +92,8 @@ def compute_shade_timeline(
     coords = pub["geometry"]["coordinates"]
     pub_lon, pub_lat = float(coords[0]), float(coords[1])
 
-    nearby = find_nearby_buildings(pub_lon, pub_lat, buildings)
+    nearby = nearby_buildings if nearby_buildings is not None \
+        else find_nearby_buildings(pub_lon, pub_lat, buildings)
 
     steps = get_daylight_steps(target_date, step_minutes)
     timeline = []
