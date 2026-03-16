@@ -131,12 +131,31 @@ def point_in_shadow(
         return False  # Night / horizon — no meaningful shadow
 
     pt = Point(point)
+    pub_lon, pub_lat = point
+
+    # Directional filter: only buildings "toward the sun" from the pub can cast
+    # shadows on it. The sun is at sun_azimuth (clockwise from north), so the
+    # dot product of (pub→building centroid) with the sun direction must be > 0.
+    sun_az_rad = math.radians(sun_azimuth)
+    sun_east  = math.sin(sun_az_rad)
+    sun_north = math.cos(sun_az_rad)
 
     for building in buildings_near:
         footprint = building.get("footprint", [])
         height = building.get("height", 0.0)
         if len(footprint) < 3:
             continue
+
+        # Directional pre-filter using pre-computed centroid (or fallback).
+        centroid = building.get("centroid")
+        if centroid is None:
+            lons = [p[0] for p in footprint]
+            lats = [p[1] for p in footprint]
+            centroid = (sum(lons) / len(lons), sum(lats) / len(lats))
+        dx = centroid[0] - pub_lon
+        dy = centroid[1] - pub_lat
+        if dx * sun_east + dy * sun_north <= 0:
+            continue  # building is behind or beside pub relative to sun
 
         # Skip the building the pub itself occupies — its terrace is outside.
         try:

@@ -24,6 +24,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import aiofiles
 import httpx
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
@@ -44,8 +45,10 @@ FRONTEND_DIR    = Path(__file__).parent.parent.parent / "frontend"
 PUBS_CACHE      = DATA_DIR / "pubs.geojson"
 BUILDINGS_CACHE = DATA_DIR / "buildings.geojson"
 
-WEATHER_CACHE_TTL_S = 3600   # 1 hour
-PRECOMPUTE_DAYS     = 3      # pre-compute today + next N days
+WEATHER_CACHE_TTL_S  = 3600   # 1 hour
+PRECOMPUTE_DAYS      = 3      # pre-compute today + next N days
+PRECOMPUTE_WORKERS   = 4      # concurrent shade timelines (shapely releases GIL)
+SHADE_CACHE_DIR      = DATA_DIR / "shade_cache"
 
 # ---------------------------------------------------------------------------
 # App
@@ -127,6 +130,42 @@ def _get_nearby_buildings(pub_lon: float, pub_lat: float) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Disk cache helpers
+# ---------------------------------------------------------------------------
+async def _save_shade_cache(target_date: date) -> None:
+    """Persist all cached timelines for *target_date* to disk."""
+    SHADE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    date_str = target_date.isoformat()
+    data = {
+        pub_id: timeline
+        for (pub_id, d), timeline in _shade_cache.items()
+        if d == date_str
+    }
+    cache_file = SHADE_CACHE_DIR / f"{date_str}.json"
+    async with aiofiles.open(str(cache_file), "w") as f:
+        await f.write(json.dumps(data))
+    print(f"[cache] Saved {len(data)} timelines → {cache_file.name}")
+
+
+async def _load_shade_cache(target_date: date) -> int:
+    """Load cached timelines for *target_date* from disk into _shade_cache."""
+    cache_file = SHADE_CACHE_DIR / f"{target_date.isoformat()}.json"
+    if not cache_file.exists():
+        return 0
+    try:
+        async with aiofiles.open(str(cache_file)) as f:
+            data = json.loads(await f.read())
+        date_str = target_date.isoformat()
+        for pub_id, timeline in data.items():
+            _shade_cache[(pub_id, date_str)] = timeline
+        print(f"[cache] Loaded {len(data)} timelines from disk for {target_date}")
+        return len(data)
+    except Exception as exc:
+        print(f"[cache] Warning: could not load disk cache for {target_date}: {exc}")
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Background pre-computation
 # ---------------------------------------------------------------------------
 def _compute_one(pub: dict, target_date: date, nearby: list[dict]) -> list[dict]:
@@ -142,41 +181,58 @@ async def _precompute_shade() -> None:
     """
     Pre-compute shade timelines for all pubs for today + PRECOMPUTE_DAYS.
 
-    Each CPU-heavy timeline computation is offloaded to a thread pool via
-    asyncio.to_thread() so the event loop (and therefore the API) stays
-    fully responsive to incoming requests throughout.
+    Steps:
+      1. Load any existing disk cache for each date (survives restarts).
+      2. Compute remaining timelines in parallel (PRECOMPUTE_WORKERS concurrent
+         threads — shapely releases the GIL, so true parallelism on multi-core).
+      3. Save completed timelines back to disk.
     """
     if not _pubs or not _buildings:
         return
 
     today = _zagreb_today()
     dates = [today + timedelta(days=i) for i in range(PRECOMPUTE_DAYS)]
-    total = len(_pubs) * len(dates)
-    done  = 0
 
-    print(f"[precompute] Starting: {len(_pubs)} pubs × {len(dates)} days ({total} timelines) …")
+    # 1. Load from disk (skip recompute for anything already cached)
+    for d in dates:
+        await _load_shade_cache(d)
 
-    for pub in _pubs:
-        pub_id = pub["properties"]["id"]
-        coords = pub["geometry"]["coordinates"]
-        pub_lon, pub_lat = float(coords[0]), float(coords[1])
-        nearby = _get_nearby_buildings(pub_lon, pub_lat)
+    sem      = asyncio.Semaphore(PRECOMPUTE_WORKERS)
+    progress = [0]
+    total    = len(_pubs) * len(dates)
+    needed   = total - len(_shade_cache)
+    print(f"[precompute] {len(_shade_cache)} loaded from disk; {needed} to compute …")
 
-        for target_date in dates:
-            cache_key = (pub_id, target_date.isoformat())
-            if cache_key in _shade_cache:
-                done += 1
-                continue
-
-            # Run CPU work in a thread — event loop stays free for requests
+    async def _one(pub: dict, target_date: date, nearby: list[dict]) -> None:
+        cache_key = (pub["properties"]["id"], target_date.isoformat())
+        if cache_key in _shade_cache:
+            progress[0] += 1
+            return
+        async with sem:
+            if cache_key in _shade_cache:   # re-check after acquiring
+                progress[0] += 1
+                return
             timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby)
             _shade_cache[cache_key] = timeline
-            done += 1
+            progress[0] += 1
+            if progress[0] % 100 == 0:
+                print(f"[precompute] {progress[0]}/{total} …")
 
-            if done % 100 == 0:
-                print(f"[precompute] {done}/{total} …")
+    tasks = [
+        _one(pub, d, _get_nearby_buildings(
+            float(pub["geometry"]["coordinates"][0]),
+            float(pub["geometry"]["coordinates"][1]),
+        ))
+        for pub in _pubs
+        for d in dates
+    ]
+    await asyncio.gather(*tasks)
 
-    print(f"[precompute] Done. {done} timelines cached.")
+    # 2. Persist to disk so the next restart is instant
+    for d in dates:
+        await _save_shade_cache(d)
+
+    print(f"[precompute] Done. {len(_shade_cache)} timelines cached.")
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +279,14 @@ async def startup() -> None:
             _buildings = valid_buildings
             _strtree = STRtree(_building_polys)
             print(f"[startup] STRtree built over {len(_building_polys)} building polygons.")
+
+            # Pre-compute centroids so shadow_cast.py doesn't recompute them
+            # on every point_in_shadow call (170 time steps × N buildings).
+            for b in _buildings:
+                fp = b["footprint"]
+                lons = [p[0] for p in fp]
+                lats = [p[1] for p in fp]
+                b["centroid"] = (sum(lons) / len(lons), sum(lats) / len(lats))
         else:
             print("[startup] ERROR: could not load buildings.")
 
