@@ -121,8 +121,23 @@ def _get_nearby_buildings(pub_lon: float, pub_lat: float) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Background pre-computation
 # ---------------------------------------------------------------------------
+def _compute_one(pub: dict, target_date: date, nearby: list[dict]) -> list[dict]:
+    """Compute a single shade timeline — runs in a thread pool worker."""
+    return compute_shade_timeline(
+        pub, _buildings, target_date,
+        step_minutes=5,
+        nearby_buildings=nearby,
+    )
+
+
 async def _precompute_shade() -> None:
-    """Pre-compute shade timelines for all pubs for today + PRECOMPUTE_DAYS."""
+    """
+    Pre-compute shade timelines for all pubs for today + PRECOMPUTE_DAYS.
+
+    Each CPU-heavy timeline computation is offloaded to a thread pool via
+    asyncio.to_thread() so the event loop (and therefore the API) stays
+    fully responsive to incoming requests throughout.
+    """
     if not _pubs or not _buildings:
         return
 
@@ -131,7 +146,7 @@ async def _precompute_shade() -> None:
     total = len(_pubs) * len(dates)
     done  = 0
 
-    print(f"[precompute] Starting shade pre-computation: {len(_pubs)} pubs × {len(dates)} days …")
+    print(f"[precompute] Starting: {len(_pubs)} pubs × {len(dates)} days ({total} timelines) …")
 
     for pub in _pubs:
         pub_id = pub["properties"]["id"]
@@ -145,21 +160,15 @@ async def _precompute_shade() -> None:
                 done += 1
                 continue
 
-            # Yield to the event loop between pubs so the API stays responsive
-            await asyncio.sleep(0)
-
-            timeline = compute_shade_timeline(
-                pub, _buildings, target_date,
-                step_minutes=5,
-                nearby_buildings=nearby,
-            )
+            # Run CPU work in a thread — event loop stays free for requests
+            timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby)
             _shade_cache[cache_key] = timeline
             done += 1
 
-        if done % 50 == 0:
-            print(f"[precompute] {done}/{total} timelines cached …")
+            if done % 100 == 0:
+                print(f"[precompute] {done}/{total} …")
 
-    print(f"[precompute] Done. {done} timelines in cache.")
+    print(f"[precompute] Done. {done} timelines cached.")
 
 
 # ---------------------------------------------------------------------------
@@ -262,11 +271,7 @@ async def get_shade(
         coords  = pub["geometry"]["coordinates"]
         pub_lon, pub_lat = float(coords[0]), float(coords[1])
         nearby  = _get_nearby_buildings(pub_lon, pub_lat)
-        timeline = compute_shade_timeline(
-            pub, _buildings, target_date,
-            step_minutes=5,
-            nearby_buildings=nearby,
-        )
+        timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby)
         _shade_cache[cache_key] = timeline
 
     return {
