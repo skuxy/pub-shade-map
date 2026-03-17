@@ -58,6 +58,7 @@ from data_pipeline.cache import DATA_DIR, load_geojson
 from data_pipeline.fetch_pubs import fetch_pubs
 from data_pipeline.fetch_buildings import fetch_buildings
 from shadow.shade_timeline import compute_shade_timeline, find_nearby_buildings, BUILDING_SEARCH_RADIUS_M
+from shadow.solar import get_sun_timeline
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -212,12 +213,18 @@ async def _load_shade_cache(target_date: date) -> int:
 # ---------------------------------------------------------------------------
 # Background pre-computation
 # ---------------------------------------------------------------------------
-def _compute_one(pub: dict, target_date: date, nearby: list[dict]) -> list[dict]:
+def _compute_one(
+    pub: dict,
+    target_date: date,
+    nearby: list[dict],
+    sun_timeline: list[dict],
+) -> list[dict]:
     """Compute a single shade timeline — runs in a thread pool worker."""
     return compute_shade_timeline(
         pub, _buildings, target_date,
         step_minutes=5,
         nearby_buildings=nearby,
+        sun_timeline=sun_timeline,
     )
 
 
@@ -247,7 +254,21 @@ async def _precompute_shade() -> None:
     needed   = total - len(_shade_cache)
     print(f"[precompute] {len(_shade_cache)} loaded from disk; {needed} to compute …")
 
-    async def _one(pub: dict, target_date: date, nearby: list[dict]) -> None:
+    # Pre-compute sun positions once per date (shared across all pubs).
+    # Each get_sun_timeline call costs ~2–3 s; without this, it would be
+    # called once per pub × date = 1332 times instead of 3 times.
+    print(f"[precompute] Pre-computing sun positions for {len(dates)} dates …")
+    sun_timelines: dict[str, list[dict]] = {}
+    for d in dates:
+        sun_timelines[d.isoformat()] = await asyncio.to_thread(get_sun_timeline, d)
+    print(f"[precompute] Sun positions ready.")
+
+    async def _one(
+        pub: dict,
+        target_date: date,
+        nearby: list[dict],
+        sun_tl: list[dict],
+    ) -> None:
         cache_key = (pub["properties"]["id"], target_date.isoformat())
         if cache_key in _shade_cache:
             progress[0] += 1
@@ -256,21 +277,21 @@ async def _precompute_shade() -> None:
             if cache_key in _shade_cache:   # re-check after acquiring
                 progress[0] += 1
                 return
-            timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby)
+            timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby, sun_tl)
             _shade_cache[cache_key] = timeline
             _sunny_scores[cache_key] = _compute_sunny_score(timeline)
             progress[0] += 1
-            if progress[0] % 100 == 0:
+            if progress[0] % 50 == 0:
                 print(f"[precompute] {progress[0]}/{total} …")
 
-    tasks = [
-        _one(pub, d, _get_nearby_buildings(
-            float(pub["geometry"]["coordinates"][0]),
-            float(pub["geometry"]["coordinates"][1]),
-        ))
-        for pub in _pubs
-        for d in dates
-    ]
+    # Build tasks: compute nearby buildings ONCE per pub (reused across dates).
+    tasks = []
+    for pub in _pubs:
+        coords  = pub["geometry"]["coordinates"]
+        nearby  = _get_nearby_buildings(float(coords[0]), float(coords[1]))
+        for d in dates:
+            tasks.append(_one(pub, d, nearby, sun_timelines[d.isoformat()]))
+
     await asyncio.gather(*tasks)
 
     # 2. Persist to disk so the next restart is instant
@@ -323,13 +344,15 @@ async def startup() -> None:
             _strtree = STRtree(_building_polys)
             print(f"[startup] STRtree built over {len(_building_polys)} building polygons.")
 
-            # Pre-compute centroids so shadow_cast.py doesn't recompute them
-            # on every point_in_shadow call (170 time steps × N buildings).
-            for b in _buildings:
+            # Pre-attach centroids and pre-built Shapely polygons to each
+            # building dict so shadow_cast.py never reconstructs them in the
+            # hot path (point_in_shadow is called 170 × N_buildings per pub).
+            for b, poly in zip(_buildings, _building_polys):
                 fp = b["footprint"]
                 lons = [p[0] for p in fp]
                 lats = [p[1] for p in fp]
                 b["centroid"] = (sum(lons) / len(lons), sum(lats) / len(lats))
+                b["poly"]     = poly   # pre-built Polygon for own-building check
         else:
             print("[startup] ERROR: could not load buildings.")
 
@@ -446,8 +469,9 @@ async def get_shade(
     if cache_key not in _shade_cache:
         coords  = pub["geometry"]["coordinates"]
         pub_lon, pub_lat = float(coords[0]), float(coords[1])
-        nearby  = _get_nearby_buildings(pub_lon, pub_lat)
-        timeline = await asyncio.to_thread(_compute_one, pub, target_date, nearby)
+        nearby    = _get_nearby_buildings(pub_lon, pub_lat)
+        sun_tl    = await asyncio.to_thread(get_sun_timeline, target_date)
+        timeline  = await asyncio.to_thread(_compute_one, pub, target_date, nearby, sun_tl)
         _shade_cache[cache_key] = timeline
         _sunny_scores[cache_key] = _compute_sunny_score(timeline)
 

@@ -81,6 +81,7 @@ def compute_shadow_polygon(
     height: float,
     sun_azimuth: float,
     sun_elevation: float,
+    base_poly: Polygon | None = None,
 ) -> Polygon | None:
     """
     Compute the ground shadow cast by a building.
@@ -113,7 +114,10 @@ def compute_shadow_polygon(
         return None
 
     try:
-        base = Polygon(footprint)
+        # Use the pre-built Polygon when supplied to avoid reconstructing from
+        # raw coordinates on every time step (called 170 × N_buildings per pub).
+        base = base_poly if (base_poly is not None and base_poly.is_valid) \
+               else Polygon(footprint)
         if not base.is_valid or base.is_empty:
             return None
 
@@ -186,13 +190,19 @@ def point_in_shadow(
             continue  # building is behind or beside pub relative to sun
 
         # Skip the building the pub itself occupies — its terrace is outside.
+        # Use the pre-built Polygon when available (avoids reconstructing it
+        # from raw coordinates on every call).
         try:
-            if Polygon(footprint).contains(pt):
+            poly = building.get("poly") or Polygon(footprint)
+            if poly.contains(pt):
                 continue
         except Exception:
             continue
 
-        shadow = compute_shadow_polygon(footprint, height, sun_azimuth, sun_elevation)
+        shadow = compute_shadow_polygon(
+            footprint, height, sun_azimuth, sun_elevation,
+            base_poly=building.get("poly"),
+        )
         if shadow is not None and shadow.contains(pt):
             return True
 

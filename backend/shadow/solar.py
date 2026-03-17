@@ -48,6 +48,43 @@ def get_sun_position(dt: datetime) -> dict | None:
     return {"azimuth": float(azimuth), "elevation": float(elevation)}
 
 
+def get_sun_timeline(
+    target_date: date,
+    step_minutes: int = 5,
+) -> list[dict]:
+    """
+    Return pre-computed sun positions for every daylight step on *target_date*.
+
+    All pubs on a given date see the same sun azimuth/elevation — computing
+    this once and sharing it across all pubs eliminates 444× redundant pysolar
+    calls (each ~8 ms) per date.
+
+    Returns:
+        List of dicts for each daylight step::
+
+            {"time": datetime, "azimuth": float, "elevation": float}
+
+        Steps where the sun is below the horizon are excluded.
+    """
+    timeline = []
+    start = datetime(target_date.year, target_date.month, target_date.day,
+                     0, 0, 0, tzinfo=timezone.utc)
+    total_steps = (24 * 60) // step_minutes
+
+    for i in range(total_steps):
+        dt = start + timedelta(minutes=i * step_minutes)
+        elevation = get_altitude(ZAGREB_LAT, ZAGREB_LON, dt, ZAGREB_ELEVATION_M)
+        if elevation > 0:
+            azimuth = get_azimuth(ZAGREB_LAT, ZAGREB_LON, dt, ZAGREB_ELEVATION_M)
+            timeline.append({
+                "time":      dt,
+                "azimuth":   float(azimuth),
+                "elevation": float(elevation),
+            })
+
+    return timeline
+
+
 def get_daylight_steps(target_date: date, step_minutes: int = 5) -> list[datetime]:
     """
     Return a list of UTC datetimes spaced *step_minutes* apart covering all

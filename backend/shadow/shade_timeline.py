@@ -8,7 +8,7 @@ The timeline is sampled at 5-minute intervals across all daylight hours.
 import math
 from datetime import date, datetime
 
-from .solar import get_daylight_steps, get_sun_position
+from .solar import get_daylight_steps, get_sun_position, get_sun_timeline
 from .shadow_cast import point_in_shadow
 
 BUILDING_SEARCH_RADIUS_M = 500.0    # metres — see shadow_cast.py for rationale
@@ -68,6 +68,7 @@ def compute_shade_timeline(
     target_date: date,
     step_minutes: int = 5,
     nearby_buildings: list[dict] | None = None,
+    sun_timeline: list[dict] | None = None,
 ) -> list[dict]:
     """
     Compute the sun/shade timeline for *pub* on *target_date*.
@@ -79,6 +80,9 @@ def compute_shade_timeline(
         step_minutes:      Time resolution in minutes (default 5).
         nearby_buildings:  Pre-filtered list of nearby buildings (skips find_nearby_buildings
                            if provided — pass this when using a spatial index in the caller).
+        sun_timeline:      Pre-computed sun positions from ``get_sun_timeline()`` (skips
+                           per-pub pysolar calls when provided — all pubs share the same
+                           sun positions for a given date, so compute once and reuse).
 
     Returns:
         List of dicts, one per daylight step:
@@ -95,25 +99,23 @@ def compute_shade_timeline(
     nearby = nearby_buildings if nearby_buildings is not None \
         else find_nearby_buildings(pub_lon, pub_lat, buildings)
 
-    steps = get_daylight_steps(target_date, step_minutes)
+    # Use pre-computed sun timeline when available (avoids 288 pysolar calls
+    # per pub — all pubs on the same date see identical sun positions).
+    if sun_timeline is None:
+        sun_timeline = get_sun_timeline(target_date, step_minutes)
+
     timeline = []
-
-    for dt in steps:
-        sun = get_sun_position(dt)
-        if sun is None:
-            continue  # sun below horizon — already filtered by get_daylight_steps
-
+    for sun in sun_timeline:
         in_shade = point_in_shadow(
             (pub_lon, pub_lat),
             nearby,
             sun["azimuth"],
             sun["elevation"],
         )
-
         timeline.append({
-            "time": dt.isoformat(),
-            "in_shade": in_shade,
-            "sun_azimuth": round(sun["azimuth"], 2),
+            "time":          sun["time"].isoformat(),
+            "in_shade":      in_shade,
+            "sun_azimuth":   round(sun["azimuth"], 2),
             "sun_elevation": round(sun["elevation"], 2),
         })
 
