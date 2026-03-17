@@ -124,14 +124,13 @@ def compute_shadow_polygon(
         ref_lat = base.centroid.y
         dx, dy = _shadow_vector(height, sun_azimuth, sun_elevation, ref_lat)
 
-        shifted_coords = [(x + dx, y + dy) for x, y in footprint]
+        # Shift the base polygon's exterior coordinates by the shadow vector.
+        # Using base.exterior.coords (which may be the convex-hull vertices
+        # when base_poly is a pre-built hull) keeps the shifted polygon simple
+        # and fast to union.
+        base_coords    = list(base.exterior.coords)
+        shifted_coords = [(x + dx, y + dy) for x, y in base_coords]
 
-        # Convex hull of (footprint + shifted footprint) is a fast and
-        # accurate approximation for the vast majority of buildings, which
-        # have approximately convex footprints.  For non-convex outlines
-        # (L/U-shapes) the hull over-estimates shadow area slightly — an
-        # acceptable trade-off given the ~100x speedup over a full
-        # edge-parallelogram unary_union.
         shadow = base.union(Polygon(shifted_coords)).convex_hull
         return shadow if not shadow.is_empty else None
 
@@ -201,7 +200,7 @@ def point_in_shadow(
 
         shadow = compute_shadow_polygon(
             footprint, height, sun_azimuth, sun_elevation,
-            base_poly=building.get("poly"),
+            base_poly=building.get("shadow_poly") or building.get("poly"),
         )
         if shadow is not None and shadow.contains(pt):
             return True

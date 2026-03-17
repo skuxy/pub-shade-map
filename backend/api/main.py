@@ -347,12 +347,24 @@ async def startup() -> None:
             # Pre-attach centroids and pre-built Shapely polygons to each
             # building dict so shadow_cast.py never reconstructs them in the
             # hot path (point_in_shadow is called 170 × N_buildings per pub).
+            #
+            # Two polygon objects are stored per building:
+            #   "poly"        — exact footprint polygon (for own-building check)
+            #   "shadow_poly" — convex hull of the footprint (for shadow math)
+            #
+            # Using the convex hull for shadow computation is lossless:
+            #   convex_hull(hull_A ∪ hull_B) == convex_hull(A ∪ B)
+            # because the final shadow is already convex-hulled.  The hull
+            # has far fewer vertices than complex OSM footprints (e.g. 8 vs
+            # 200), making Polygon(shifted_coords).union(base) dramatically
+            # faster.
             for b, poly in zip(_buildings, _building_polys):
                 fp = b["footprint"]
                 lons = [p[0] for p in fp]
                 lats = [p[1] for p in fp]
-                b["centroid"] = (sum(lons) / len(lons), sum(lats) / len(lats))
-                b["poly"]     = poly   # pre-built Polygon for own-building check
+                b["centroid"]    = (sum(lons) / len(lons), sum(lats) / len(lats))
+                b["poly"]        = poly              # exact — for contains() check
+                b["shadow_poly"] = poly.convex_hull  # simplified — for shadow math
         else:
             print("[startup] ERROR: could not load buildings.")
 
