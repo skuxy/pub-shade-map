@@ -257,6 +257,23 @@ section h3 {
 /* ── Misc ──────────────────────────────────────────────────────────────── */
 .muted { color: var(--text-muted); font-size: 0.85rem; padding: 8px 0; }
 
+/* ── Cloudy weather overlay ─────────────────────────────────────────────── */
+.cloudy-weather {
+  opacity: 0.55;
+  filter: grayscale(45%);
+  transition: opacity 0.3s, filter 0.3s;
+}
+
+.cloud-note {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+}
+
 /* ── Loading overlay ───────────────────────────────────────────────────── */
 #loading-overlay {
   position: fixed;

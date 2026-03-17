@@ -33,6 +33,7 @@ let allPubs     = [];
 let markerMap   = {};   // pub_id → Leaflet marker
 let selectedPubId = null;
 let activeFilter  = 'all';   // 'all' | 'sun' | 'shade'
+let weatherDays   = [];      // day summaries from last weather fetch
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -102,8 +103,11 @@ async function refreshCurrentStatus() {
     const { pubs } = await resp.json();
 
     for (const [pubId, info] of Object.entries(pubs)) {
-      const status = (info.status === 'unknown') ? 'night' : info.status;
-      setMarkerStatus(pubId, status);
+      // Skip pubs whose timeline hasn't been computed yet — don't override
+      // the initial marker colour with a misleading 'night' dot.
+      if (info.status !== 'unknown') {
+        setMarkerStatus(pubId, info.status);
+      }
     }
   } catch (_) {
     // Non-fatal — markers stay at last known status.
@@ -138,6 +142,8 @@ function openPanel(pub) {
   document.getElementById('weather-loading').style.display  = 'block';
   document.getElementById('weather-container').innerHTML    = '';
   document.getElementById('status-badge').className = 'badge badge-hidden';
+  weatherDays = [];
+  applyCloudOverlay();  // clear any previous overlay while new weather loads
 
   const [lon, lat] = pub.geometry.coordinates;
   const pubId = pub.properties.id;
@@ -150,7 +156,10 @@ function openPanel(pub) {
   loadShade(pubId, datePicker.value, pub.properties.opening_hours);
   loadWeather(lat, lon);
 
-  datePicker.onchange = () => loadShade(pubId, datePicker.value, pub.properties.opening_hours);
+  datePicker.onchange = () => {
+    loadShade(pubId, datePicker.value, pub.properties.opening_hours);
+    applyCloudOverlay();
+  };
 }
 
 function closePanel() {
@@ -177,6 +186,7 @@ async function loadShade(pubId, dateStr, openingHours) {
 
     renderTimeline('timeline-chart', data.timeline, dateStr, data.sunny_pct, openingHours);
     updateStatusBadge(data.timeline, dateStr);
+    applyCloudOverlay();
 
     // Update the sunny score badge in the panel if we now have fresher data.
     if (data.sunny_pct != null && dateStr === todayZagreb()) {
@@ -226,11 +236,34 @@ function updateStatusBadge(timeline, dateStr) {
   }
 }
 
+// ── Cloudy weather overlay ────────────────────────────────────────────────
+
+/**
+ * Add or remove the cloudy tint on the timeline and status badge based on
+ * the weather forecast for the currently selected date.
+ *
+ * "Cloudy" = WMO code ≥ 3 (overcast / fog / precipitation) or cloud cover ≥ 70 %.
+ */
+function applyCloudOverlay() {
+  const dateStr = document.getElementById('date-picker').value;
+  const dayData = weatherDays.find(d => d.date === dateStr);
+  const cloudy  = dayData && (dayData.code >= 3 || dayData.cloudAvg >= 70);
+
+  const timelineEl = document.getElementById('timeline-section');
+  const badgeEl    = document.getElementById('status-badge');
+  const noteEl     = document.getElementById('cloud-note');
+
+  if (timelineEl) timelineEl.classList.toggle('cloudy-weather', !!cloudy);
+  if (badgeEl)    badgeEl.classList.toggle('cloudy-weather',    !!cloudy);
+  if (noteEl)     noteEl.style.display = cloudy ? 'block' : 'none';
+}
+
 // ── Load weather ──────────────────────────────────────────────────────────
 
 async function loadWeather(lat, lon) {
   const data = await fetchWeather(lat, lon);
-  renderWeather('weather-container', data);
+  weatherDays = renderWeather('weather-container', data) || [];
+  applyCloudOverlay();
 }
 
 // ── Filter controls ───────────────────────────────────────────────────────

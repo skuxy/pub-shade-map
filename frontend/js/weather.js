@@ -106,7 +106,7 @@ function renderWeather(containerId, weatherData) {
 
   if (!weatherData) {
     loading.textContent = 'Weather unavailable.';
-    return;
+    return [];
   }
 
   loading.style.display = 'none';
@@ -138,4 +138,6 @@ function renderWeather(containerId, weatherData) {
     `;
     container.appendChild(card);
   });
+
+  return days;
 }
