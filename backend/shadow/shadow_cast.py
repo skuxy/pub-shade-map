@@ -188,6 +188,20 @@ def point_in_shadow(
         if dx * sun_east + dy * sun_north <= 0:
             continue  # building is behind or beside pub relative to sun
 
+        # Distance pre-filter: a building of *height* can only cast a shadow of
+        # length height/tan(elevation).  If the centroid is farther away than
+        # that (plus a generous 20 % margin for building size), the shadow tip
+        # can't reach the pub — skip without any Shapely work.
+        shadow_max_m = min(
+            height / math.tan(math.radians(sun_elevation)),
+            MAX_SHADOW_LENGTH_M,
+        )
+        dist_m = math.sqrt(
+            (dx * _lon_m_per_deg(pub_lat)) ** 2 + (dy * LAT_M_PER_DEG) ** 2
+        )
+        if dist_m > shadow_max_m * 1.2:
+            continue
+
         # Skip the building the pub itself occupies — its terrace is outside.
         # Use the pre-built Polygon when available (avoids reconstructing it
         # from raw coordinates on every call).
