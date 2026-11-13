@@ -93,8 +93,9 @@ def overpass(body: str, timeout_s: int = 180) -> list[dict]:
 def fetch_pubs() -> Path:
     print("Fetching venues from OSM …")
     elements = overpass(
-        '(nwr["amenity"~"^(pub|bar|biergarten)$"];'
-        'nwr["amenity"="cafe"]["outdoor_seating"]["outdoor_seating"!="no"];);'
+        # Zagreb's caffe bars are mostly amenity=cafe without an outdoor_seating
+        # tag, so take every cafe; the ones tagged "no" are dropped below.
+        '(nwr["amenity"~"^(pub|bar|biergarten|cafe)$"];);'
         "out center tags;"
     )
     features = []

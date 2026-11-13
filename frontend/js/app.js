@@ -80,9 +80,14 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
 }).addTo(map);
 
+// Keep the map filling its box however the box changes (panel, rotation, late layout).
+new ResizeObserver(() => map.invalidateSize()).observe($('map'));
+
 const STYLE = {
   sun:   { radius: 8, fillColor: '#ffc400', color: '#7a4b00', weight: 2,   fillOpacity: 1 },
   shade: { radius: 6, fillColor: '#4b5d82', color: '#ffffff', weight: 1.5, fillOpacity: 1 },
+  // would be in direct sun, but the forecast for that hour is overcast
+  cloud: { radius: 7, fillColor: '#efe2ae', color: '#9a8748', weight: 1.5, fillOpacity: 0.75 },
   night: { radius: 5, fillColor: '#1c2333', color: '#8c96ad', weight: 1,   fillOpacity: 0.9 },
 };
 
@@ -90,15 +95,17 @@ function render() {
   const dt = selectedTime();
   const sun = sunAt(dt);
   const counts = { sun: 0, shade: 0, night: 0 };
+  const cloudy = isCloudy(weather, dt);
 
   for (const pub of pubs) {
     const status = statusAt(pub, sun);
     counts[status]++;
     pub.status = status;
     const isSelected = pub === selected;
+    const style = STYLE[cloudy && status === 'sun' ? 'cloud' : status];
     pub.marker.setStyle({
-      ...STYLE[status],
-      ...(isSelected ? { weight: 4, color: '#e5322d', radius: STYLE[status].radius + 2 } : {}),
+      ...style,
+      ...(isSelected ? { weight: 4, color: '#e5322d', radius: style.radius + 2 } : {}),
     });
     const visible = filter === 'all' || filter === status || isSelected;
     if (visible && !map.hasLayer(pub.marker)) pub.marker.addTo(map);
@@ -109,9 +116,10 @@ function render() {
   $('time-label').textContent = dt.toFormat('HH:mm');
   $('counts').textContent = sun.el <= 0
     ? `${dt.toFormat('ccc d LLL, HH:mm')} — the sun is down`
-    : `${dt.toFormat('ccc d LLL, HH:mm')} — ${counts.sun} in sun · ${counts.shade} in shade`;
+    : cloudy
+      ? `${dt.toFormat('ccc d LLL, HH:mm')} — overcast · ${counts.sun} would be in sun · ${counts.shade} in shade`
+      : `${dt.toFormat('ccc d LLL, HH:mm')} — ${counts.sun} in sun · ${counts.shade} in shade`;
 
-  const cloudy = isCloudy(weather, dt);
   $('legend-cloud').hidden = !cloudy;
   document.body.classList.toggle('night', sun.el <= 0);
   if (selected) renderPanel();
@@ -178,8 +186,9 @@ function renderPanel() {
   // Badge: status now, and when it next changes.
   const TEXT = { sun: ['☀️', 'In the sun'], shade: ['⛱️', 'In the shade'], night: ['🌙', 'Sun is down'] };
   $('status-badge').className = `badge ${status}`;
-  $('status-icon').textContent = TEXT[status][0];
-  $('status-text').textContent = `${TEXT[status][1]} at ${dt.toFormat('HH:mm')}`;
+  const overcast = status === 'sun' && isCloudy(weather, dt);
+  $('status-icon').textContent = overcast ? '☁️' : TEXT[status][0];
+  $('status-text').textContent = `${overcast ? 'Sunny spot, but overcast' : TEXT[status][1]} at ${dt.toFormat('HH:mm')}`;
   let change = steps.findIndex((s, i) => i > nowIdx && s !== status);
   let next = '';
   if (status === 'night') {

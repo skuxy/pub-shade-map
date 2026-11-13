@@ -5,6 +5,7 @@ sun or in the shade — right now, or at any time of any day.
 
 **Live:** https://skuxy.github.io/pub-shade-map/
 
+- Pale yellow markers would be in the sun, but the forecast for that hour is overcast.
 - Yellow markers are in direct sun, blue-grey ones in shade, dark ones mean the sun is down.
 - Drag the time slider or pick a date to see another moment; **Now** follows the clock.
 - Click a venue for its sun/shade timeline for the day, hours of direct sun and the forecast.

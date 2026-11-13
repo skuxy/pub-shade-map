@@ -1,5 +1,5 @@
 /**
- * weather.js — fetch and render a 3-day hourly weather forecast from Open-Meteo.
+ * weather.js — fetch an hourly forecast from Open-Meteo and render the next 3 days from Open-Meteo.
  */
 
 // WMO Weather Interpretation Codes → human label + emoji
@@ -32,7 +32,7 @@ function wmoLabel(code) {
 }
 
 /**
- * Fetch a 3-day hourly forecast straight from Open-Meteo (CORS-enabled, no
+ * Fetch a 16-day hourly forecast (the longest Open-Meteo offers) straight from Open-Meteo (CORS-enabled, no
  * key).  One call for the city is enough: the forecast grid is ~2 km.
  * @returns {Promise<Object|null>} Open-Meteo response or null on error.
  */
@@ -40,7 +40,7 @@ async function loadWeather(lat, lon) {
   const url = 'https://api.open-meteo.com/v1/forecast'
     + `?latitude=${lat}&longitude=${lon}`
     + '&hourly=temperature_2m,precipitation_probability,weathercode,cloudcover,windspeed_10m'
-    + '&forecast_days=3&timezone=Europe%2FZagreb';
+    + '&forecast_days=16&timezone=Europe%2FZagreb';
   try {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
