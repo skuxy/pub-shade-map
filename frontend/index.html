@@ -40,6 +40,7 @@
       <div id="legend" aria-label="Legend">
         <span><i class="dot sun"></i>in sun</span>
         <span><i class="dot shade"></i>in shade</span>
+        <span><i class="dot tree"></i>under trees</span>
         <span><i class="dot night"></i>sun is down</span>
         <span id="legend-cloud" hidden><i class="dot cloud"></i>sunny spot, overcast forecast</span>
       </div>
@@ -63,6 +64,7 @@
             <canvas id="timeline" height="64" title="Click to jump to a time"></canvas>
             <p id="timeline-summary" class="muted"></p>
             <p id="cloud-note" class="note" hidden>☁️ Overcast forecast — direct sun may be limited</p>
+            <p id="tree-note" class="note" hidden></p>
             <p id="terrace-note" class="note"></p>
           </section>
 
@@ -73,8 +75,9 @@
           </section>
 
           <p class="muted small">
-            Shade is computed from surveyed roof heights (ZG3D, City of Zagreb).
-            Trees, awnings and parasols are not modelled.
+            Shade is computed from surveyed roof heights (ZG3D) and the city's
+            tree register (2016 survey, size classes; private trees are missing).
+            Awnings and parasols are not modelled.
           </p>
         </div>
       </aside>

@@ -6,7 +6,8 @@ sun or in the shade — right now, or at any time of any day.
 **Live:** https://skuxy.github.io/pub-shade-map/
 
 - Pale yellow markers would be in the sun, but the forecast for that hour is overcast.
-- Yellow markers are in direct sun, blue-grey ones in shade, dark ones mean the sun is down.
+- Yellow markers are in direct sun, blue-grey ones in the shade of a building, green ones
+  behind a tree crown, dark ones mean the sun is down.
 - Drag the time slider or pick a date to see another moment; **Now** follows the clock.
 - Click a venue for its sun/shade timeline for the day, hours of direct sun and the forecast.
 
@@ -33,6 +34,7 @@ backend/
   data_pipeline/sources.py    downloads (Overpass, ZG3D ArcGIS FeatureServer)
   data_pipeline/obstacles.py  ZG3D roofs + OSM gap fill → one Scene
   shadow/horizon.py           terrace point and horizon profile (the maths)
+  shadow/trees.py             elevation intervals hidden by tree crowns
   shadow/solar.py             pysolar reference, used for the build summary
   scripts/build_data.py       writes frontend/data/pubs.json
   tests/                      hand-computable synthetic scenes
@@ -69,7 +71,11 @@ Without it, cached downloads are reused. Commit the regenerated
   its building. The terrace point is a guess (street side, nearest to the
   mapped point) and for a building in a dense block the answer can differ a lot
   between sides. The map shows the point it used when you select a venue.
-- **Trees, awnings, parasols.** Only buildings cast shade here.
+- **Private trees, awnings, parasols.** Trees come from the city's register of
+  the trees it maintains (streets, parks; surveyed mostly in 2016, sizes in
+  classes such as "6 to 10 m"). Courtyard and garden trees are missing, the
+  listed ones have grown since, and a crown is drawn as a plain cylinder.
+  Deciduous trees count from mid-April to the end of October.
 - **Roof shape.** Each ZG3D roof polygon is treated as flat at its highest
   point, which slightly overstates shade next to pitched roofs.
 - **Recent construction.** Much of ZG3D dates from a 2008 survey.
@@ -79,6 +85,6 @@ Without it, cached downloads are reused. Commit the regenerated
 ## Data and licences
 
 - Venues, streets, fallback footprints: © OpenStreetMap contributors, ODbL.
-- Roof polygons and elevations: Grad Zagreb, ZG3D, "Otvorena dozvola".
+- Roof polygons and elevations, tree register: Grad Zagreb, "Otvorena dozvola".
 - Weather: Open-Meteo. Map tiles: OpenStreetMap.
 - Code: MIT (see `LICENSE`).

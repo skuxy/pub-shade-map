@@ -46,6 +46,20 @@ def _fallback_height(area_m2: float) -> float:
     return next(h for limit, h in AREA_CLASS_HEIGHT_M if area_m2 < limit)
 
 
+def load_trees() -> dict:
+    """The tree register as arrays in local metres: x, y, crown, height, evergreen."""
+    feats = sources.load("trees.geojson")
+    lonlat = np.array([f["geometry"]["coordinates"][:2] for f in feats], dtype=float).reshape(-1, 2)
+    x, y = CENTRE.to_xy(lonlat[:, 0], lonlat[:, 1])
+    prop = [f["properties"] for f in feats]
+    return {
+        "x": np.asarray(x, dtype=float), "y": np.asarray(y, dtype=float),
+        "crown": np.array([p["crown"] for p in prop], dtype=float),
+        "height": np.array([p["height"] for p in prop], dtype=float),
+        "evergreen": np.array([sources.is_evergreen(p["species"]) for p in prop], dtype=bool),
+    }
+
+
 def build_scene() -> tuple[Scene, dict]:
     """Return the Scene (local metres around ``CENTRE``) and a few counts."""
     # ── ZG3D ────────────────────────────────────────────────────────────

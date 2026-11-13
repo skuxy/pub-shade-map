@@ -4,6 +4,8 @@ Download the raw inputs and cache them under ``data/`` (git-ignored).
   pubs.geojson       OSM venues (pub / bar / biergarten, cafés with seating)
   streets.geojson    OSM streets, used to find the street side of a building
   buildings.geojson  OSM building footprints (gap filler outside ZG3D)
+  trees.geojson      City of Zagreb tree register: position, height and
+                     crown-width class, species
   zg3d.geojson       City of Zagreb ZG3D LoD2 roof polygons with surveyed
                      Z_Min / Z_Max elevations — the primary height source
 
@@ -278,7 +280,73 @@ def fetch_zg3d() -> Path:
     return _save("zg3d.geojson", features, source="Grad Zagreb ZG3D", layers=layers)
 
 
+# ---------------------------------------------------------------------------
+# City tree register
+# ---------------------------------------------------------------------------
+# The register records size in classes, not measurements; use class midpoints.
+TREE_HEIGHT_M = {"do 5m": 4.0, "od 6 od 10m": 8.0, "od 11 od 15m": 13.0,
+                 "od 16 od 20m": 18.0, "od 21 od 25m": 23.0, "više od 25m": 28.0}
+TREE_CROWN_M = {"do 5m": 4.0, "od 6 do 10m": 8.0, "od 11 do 15m": 13.0, "više od 15m": 17.0}
+# Genera (or full names) that keep their leaves in winter.  Larch, bald cypress,
+# dawn redwood and ginkgo are conifers or look like them but are deciduous.
+EVERGREEN = ("PINUS", "PICEA", "ABIES", "CHAMAECYPARIS", "THUJA", "THUJOPSIS", "TAXUS",
+             "CEDRUS", "JUNIPERUS", "CUPRESSUS", "CUPRESSOCYPARIS", "CUPRESOCYPARIS", "X CUPRESSOCYPARIS",
+             "PSEUDOTSUGA", "TSUGA", "SEQUOIADENDRON", "SEQUOIA", "CALOCEDRUS",
+             "PLATYCLADUS", "CRYPTOMERIA", "ILEX", "BUXUS", "MAGNOLIA GRANDIFLORA",
+             "PRUNUS LAUROCERASUS", "QUERCUS ILEX", "LAURUS", "WASHINGTONIA")
+
+
+def is_evergreen(species: str) -> bool:
+    name = " ".join((species or "").upper().split())
+    return any(name == e or name.startswith(e + " ") for e in EVERGREEN)
+
+
+def fetch_trees() -> Path:
+    print("Fetching the tree register from the City of Zagreb …")
+    url = f"{ARCGIS}/stablo_SpatialJoin/FeatureServer/0/query"
+    where = {
+        "where": "1=1",
+        "geometry": f"{WEST},{SOUTH},{EAST},{NORTH}",
+        "geometryType": "esriGeometryEnvelope",
+        "inSR": 4326,
+        "spatialRel": "esriSpatialRelIntersects",
+    }
+    count = _arcgis(url, {**where, "returnCountOnly": "true", "f": "json"})["count"]
+
+    def page(offset: int) -> list[dict]:
+        return _arcgis(url, {
+            **where,
+            "outFields": "OBJECTID,vrsta,visina,pr_krosnje",
+            "orderByFields": "OBJECTID",
+            "resultOffset": offset,
+            "resultRecordCount": 2000,
+            "outSR": 4326,
+            "geometryPrecision": 7,
+            "f": "geojson",
+        })["features"]
+
+    with ThreadPoolExecutor(4) as pool:
+        raw = [f for chunk in pool.map(page, range(0, count, 2000)) for f in chunk]
+    if len(raw) != count:
+        raise RuntimeError(f"trees: expected {count} features, got {len(raw)}")
+
+    features = []
+    for f in raw:
+        p = f["properties"]
+        height = TREE_HEIGHT_M.get((p.get("visina") or "").strip())
+        crown = TREE_CROWN_M.get((p.get("pr_krosnje") or "").strip())
+        if f.get("geometry") is None or height is None or crown is None:
+            continue                      # size not recorded
+        species = " ".join((p.get("vrsta") or "").split())
+        f["properties"] = {"id": p["OBJECTID"], "species": species, "height": height,
+                           "crown": crown, "evergreen": is_evergreen(species)}
+        features.append(f)
+    print(f"  {len(features):,} of {count:,} trees have a recorded size")
+    return _save("trees.geojson", features, source="Grad Zagreb, katastar zelenila (stabla)")
+
+
 FETCHERS = {
+    "trees.geojson": fetch_trees,
     "pubs.geojson": fetch_pubs,
     "streets.geojson": fetch_streets,
     "buildings.geojson": fetch_osm_buildings,

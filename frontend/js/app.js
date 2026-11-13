@@ -10,6 +10,12 @@
  *
  * (same rule as backend/shadow/horizon.py:is_shaded).  The sun's position
  * comes from SunCalc, so any date and time is a table lookup — no server.
+ *
+ * Trees are separate, because the sun can shine under a crown: per bearing
+ * the file lists elevation intervals covered by foliage (backend/shadow/
+ * trees.py).  A venue the roofs leave in the sun is in tree shade when the
+ * sun's elevation falls in one of them.  Deciduous trees count only while
+ * they are in leaf.
  */
 
 const { DateTime } = luxon;
@@ -39,11 +45,34 @@ function sunAt(dt) {
   };
 }
 
-/** 'sun' | 'shade' | 'night' for one venue given a sun position. */
-function statusAt(pub, sun) {
+/** Deciduous trees in Zagreb carry leaves from about mid-April to the end of October. */
+function inLeaf(dt) {
+  const md = dt.month * 100 + dt.day;
+  return md >= 415 && md <= 1031;
+}
+
+/** Flat [bin, low, high, …] triples → per-bin lists of [low, high] (tenths of a degree). */
+function unpackFoliage(flat) {
+  const bins = {};
+  for (let k = 0; k + 2 < (flat || []).length; k += 3) {
+    (bins[flat[k]] = bins[flat[k]] || []).push([flat[k + 1], flat[k + 2]]);
+  }
+  return bins;
+}
+
+const behind = (bins, i, el10) => (bins[i] || []).some(([lo, hi]) => lo <= el10 && el10 <= hi);
+
+/**
+ * 'sun' | 'tree' | 'shade' | 'night' for one venue given a sun position.
+ * 'shade' is a roof in the way; 'tree' is foliage in the way and no roof.
+ */
+function statusAt(pub, sun, leaf) {
   if (sun.el <= 0) return 'night';
   const i = Math.floor(sun.az * nAz / 360 + 0.5) % nAz;
-  return sun.el < pub.horizon[i] / 10 ? 'shade' : 'sun';
+  const el10 = sun.el * 10;
+  if (el10 < pub.horizon[i]) return 'shade';
+  if (behind(pub.evergreenBins, i, el10) || (leaf && behind(pub.treeBins, i, el10))) return 'tree';
+  return 'sun';
 }
 
 // ── Time controls ─────────────────────────────────────────────────────────
@@ -85,6 +114,7 @@ new ResizeObserver(() => map.invalidateSize()).observe($('map'));
 
 const STYLE = {
   sun:   { radius: 8, fillColor: '#ffc400', color: '#7a4b00', weight: 2,   fillOpacity: 1 },
+  tree:  { radius: 6, fillColor: '#4f9a63', color: '#ffffff', weight: 1.5, fillOpacity: 1 },
   shade: { radius: 6, fillColor: '#4b5d82', color: '#ffffff', weight: 1.5, fillOpacity: 1 },
   // would be in direct sun, but the forecast for that hour is overcast
   cloud: { radius: 7, fillColor: '#efe2ae', color: '#9a8748', weight: 1.5, fillOpacity: 0.75 },
@@ -94,11 +124,12 @@ const STYLE = {
 function render() {
   const dt = selectedTime();
   const sun = sunAt(dt);
-  const counts = { sun: 0, shade: 0, night: 0 };
+  const counts = { sun: 0, tree: 0, shade: 0, night: 0 };
   const cloudy = isCloudy(weather, dt);
+  const leaf = inLeaf(dt);
 
   for (const pub of pubs) {
-    const status = statusAt(pub, sun);
+    const status = statusAt(pub, sun, leaf);
     counts[status]++;
     pub.status = status;
     const isSelected = pub === selected;
@@ -107,18 +138,20 @@ function render() {
       ...style,
       ...(isSelected ? { weight: 4, color: '#e5322d', radius: style.radius + 2 } : {}),
     });
-    const visible = filter === 'all' || filter === status || isSelected;
+    const visible = filter === 'all' || filter === (status === 'tree' ? 'shade' : status) || isSelected;
     if (visible && !map.hasLayer(pub.marker)) pub.marker.addTo(map);
     if (!visible && map.hasLayer(pub.marker)) map.removeLayer(pub.marker);
     if (status === 'sun' || isSelected) pub.marker.bringToFront();
   }
 
+  const shadeText = `${counts.shade + counts.tree} in shade`
+    + (counts.tree ? ` (${counts.tree} under trees)` : '');
   $('time-label').textContent = dt.toFormat('HH:mm');
   $('counts').textContent = sun.el <= 0
     ? `${dt.toFormat('ccc d LLL, HH:mm')} — the sun is down`
     : cloudy
-      ? `${dt.toFormat('ccc d LLL, HH:mm')} — overcast · ${counts.sun} would be in sun · ${counts.shade} in shade`
-      : `${dt.toFormat('ccc d LLL, HH:mm')} — ${counts.sun} in sun · ${counts.shade} in shade`;
+      ? `${dt.toFormat('ccc d LLL, HH:mm')} — overcast · ${counts.sun} would be in sun · ${shadeText}`
+      : `${dt.toFormat('ccc d LLL, HH:mm')} — ${counts.sun} in sun · ${shadeText}`;
 
   $('legend-cloud').hidden = !cloudy;
   document.body.classList.toggle('night', sun.el <= 0);
@@ -130,8 +163,9 @@ function render() {
 /** Status for every STEP_MIN minutes of wall-clock time on the selected Zagreb day. */
 function dayTimeline(pub, day) {
   const steps = [];
+  const leaf = inLeaf(day);
   for (let m = 0; m < 24 * 60; m += STEP_MIN) {
-    steps.push(statusAt(pub, sunAt(wallTime(day, m))));
+    steps.push(statusAt(pub, sunAt(wallTime(day, m)), leaf));
   }
   return steps;
 }
@@ -153,7 +187,7 @@ function drawTimeline(steps, nowMinutes) {
   canvas.dataset.first = first;
   canvas.dataset.span = span;
 
-  const colours = { sun: '#ffc400', shade: '#4b5d82', night: '#1c2333' };
+  const colours = { sun: '#ffc400', tree: '#4f9a63', shade: '#4b5d82', night: '#1c2333' };
   for (let i = first; i < last; i++) {
     ctx.fillStyle = colours[steps[i]];
     ctx.fillRect(x(i), 0, Math.ceil(width / span) + 0.5, 44);
@@ -184,7 +218,8 @@ function renderPanel() {
   const hhmm = (i) => `${String(Math.floor(i * STEP_MIN / 60)).padStart(2, '0')}:${String(i * STEP_MIN % 60).padStart(2, '0')}`;
 
   // Badge: status now, and when it next changes.
-  const TEXT = { sun: ['☀️', 'In the sun'], shade: ['⛱️', 'In the shade'], night: ['🌙', 'Sun is down'] };
+  const TEXT = { sun: ['☀️', 'In the sun'], tree: ['🌳', 'In tree shade'], shade: ['⛱️', 'In the shade'], night: ['🌙', 'Sun is down'] };
+  const THEN = { sun: 'sun', tree: 'tree shade', shade: 'shade' };
   $('status-badge').className = `badge ${status}`;
   const overcast = status === 'sun' && isCloudy(weather, dt);
   $('status-icon').textContent = overcast ? '☁️' : TEXT[status][0];
@@ -196,7 +231,7 @@ function renderPanel() {
     if (firstSun >= 0) next = `First sun at ${hhmm(firstSun)}`;
   } else if (change >= 0) {
     next = steps[change] === 'night' ? `until sunset at ${hhmm(change)}`
-      : `until ${hhmm(change)}, then ${steps[change] === 'sun' ? 'sun' : 'shade'}`;
+      : `until ${hhmm(change)}, then ${THEN[steps[change]]}`;
   }
   $('status-next').textContent = next;
 
@@ -204,6 +239,7 @@ function renderPanel() {
   $('timeline-date').textContent = dt.toFormat('cccc d LLLL');
   drawTimeline(steps, dt.hour * 60 + dt.minute);
   const sunSteps = steps.filter((s) => s === 'sun').length;
+  const treeSteps = steps.filter((s) => s === 'tree').length;
   const dayStepsCount = steps.filter((s) => s !== 'night').length;
   const firstSun = steps.indexOf('sun');
   const lastSun = steps.lastIndexOf('sun');
@@ -211,6 +247,16 @@ function renderPanel() {
     ? 'No direct sun on this day.'
     : `${(sunSteps * STEP_MIN / 60).toFixed(1)} h of direct sun (of ${(dayStepsCount * STEP_MIN / 60).toFixed(1)} h daylight), `
       + `first ${hhmm(firstSun)}, last ${hhmm(lastSun + 1)}`;
+  if (treeSteps) {
+    $('timeline-summary').textContent += ` · ${(treeSteps * STEP_MIN / 60).toFixed(1)} h behind trees`;
+  }
+  const hasTrees = pub.trees.length || pub.evergreens.length;
+  $('tree-note').hidden = !hasTrees;
+  if (hasTrees) {
+    $('tree-note').textContent = !pub.trees.length ? '🌳 Evergreen trees nearby are counted all year.'
+      : inLeaf(dt) ? '🌳 Trees nearby are counted as in leaf (mid-April to October). Tree shade is dappled, not solid.'
+        : '🌳 Deciduous trees nearby are bare on this date and not counted.';
+  }
 
   $('cloud-note').hidden = !isCloudy(weather, dt);
 }
@@ -296,6 +342,10 @@ async function init() {
   }
 
   for (const pub of pubs) {
+    pub.trees = pub.trees || [];
+    pub.evergreens = pub.evergreens || [];
+    pub.treeBins = unpackFoliage(pub.trees);
+    pub.evergreenBins = unpackFoliage(pub.evergreens);
     pub.marker = L.circleMarker([pub.lat, pub.lon], STYLE.night)
       .bindTooltip(() => { const el = document.createElement('span'); el.textContent = pub.name; return el; }, { direction: 'top', offset: [0, -6] })
       .on('click', (ev) => { L.DomEvent.stopPropagation(ev); openPanel(pub); })
