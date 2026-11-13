@@ -1,0 +1,51 @@
+frontend/index.html
+  s_a5b4d6a9f70b52::t_ae72d3571cf0b5 43,67,78-80
+README.md
+  s_a5b4d6a9f70b52::t_ae72d3571cf0b5 9-10,37,74-78,88
+frontend/css/style.css
+  s_a5b4d6a9f70b52::t_ae72d3571cf0b5 93,142
+  s_b49256e00b129a::t_e94a459aae1b9a 21
+backend/shadow/trees.py
+  s_a5b4d6a9f70b52::t_d7c697ef4b0edb 1-89
+frontend/js/app.js
+  s_a5b4d6a9f70b52::t_1c1d83828d0bae 251
+  s_a5b4d6a9f70b52::t_ae72d3571cf0b5 13-18,48-69,72-75,117,127,129,132,141,147-148,153-154,166,168,190,221-222,234,242,250,252-259,345-348
+backend/data_pipeline/sources.py
+  s_a5b4d6a9f70b52::t_531d64f514b7d1 296
+  s_a5b4d6a9f70b52::t_d7c697ef4b0edb 293
+  s_a5b4d6a9f70b52::t_9de5c5ad76df7c 7-8,283-292,294-295,297-347,349
+backend/data_pipeline/obstacles.py
+  s_a5b4d6a9f70b52::t_d7c697ef4b0edb 49-62
+backend/tests/test_trees.py
+  s_a5b4d6a9f70b52::t_d7c697ef4b0edb 1-81
+backend/scripts/build_data.py
+  s_a5b4d6a9f70b52::t_d7c697ef4b0edb 25-27,32,35,51-54,61-71,73,82,98-101,105-107,124-125
+  s_a5b4d6a9f70b52::t_b274fa71a04d31 55-60
+  s_a5b4d6a9f70b52::t_9ccce2ee406a19 81
+frontend/data/pubs.json
+  s_a5b4d6a9f70b52::t_a965254fbfc73f 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f496e4ee16f1dc820f6ee8ada1ecd9f345b360bf",
+  "prompts": {},
+  "sessions": {
+    "s_a5b4d6a9f70b52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "60937248-99ad-4cde-828e-182ab88d0613",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Borna Skukan <bskukan@daytona.io>"
+    },
+    "s_b49256e00b129a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a4e06868b2d686525",
+        "model": "unknown"
+      },
+      "human_author": "Borna Skukan <bskukan@daytona.io>"
+    }
+  }
+}
