@@ -1,87 +1,83 @@
 # Zagreb Pub Shade Map
 
-Interactive map showing when Zagreb pubs and bars are in sun or shade throughout the day, combined with a 3-day weather forecast.
+An interactive map showing which Zagreb pubs, bars and café terraces are in the
+sun or in the shade — right now, or at any time of any day.
 
-## Features
+**Live:** https://skuxy.github.io/pub-shade-map/
 
-- All pubs, bars, and cafes with outdoor seating in Zagreb from OpenStreetMap
-- 2.5D shadow casting using building footprints and heights at **5-minute resolution**
-- Visual sun/shade timeline per pub for today and the next 3 days
-- 3-day weather forecast from Open-Meteo (free, no API key required)
-- Interactive Leaflet.js map with dark theme
-- Markers coloured by current shade status (yellow = sun, grey = shade)
+- Yellow markers are in direct sun, blue-grey ones in shade, dark ones mean the sun is down.
+- Drag the time slider or pick a date to see another moment; **Now** follows the clock.
+- Click a venue for its sun/shade timeline for the day, hours of direct sun and the forecast.
 
-## How It Works
+## How it works
 
-1. Building footprints and heights are fetched from OpenStreetMap and cached locally
-2. Sun position (azimuth + elevation angle) is computed for Zagreb at 5-minute intervals using `pysolar`
-3. For each time step, a shadow polygon is projected from each building footprint opposite the sun:
-   - `shadow_length = building_height / tan(sun_elevation)`
-   - Shadow polygon = convex hull of footprint vertices + offset vertices
-4. Each pub is checked against shadow polygons of nearby buildings (≤ 200 m radius)
-5. Results are served via FastAPI and visualised on a Leaflet map
+The site is fully static: no backend, no API keys.
 
-## Data Sources
+1. A build script downloads venues, streets and building footprints from
+   OpenStreetMap, and surveyed roof polygons with absolute elevations from the
+   City of Zagreb's ZG3D model.
+2. For each venue it picks a **terrace point** (3 m outside the venue's
+   building, on the street side where it can tell) and computes a **horizon
+   profile**: for each degree of compass bearing, the elevation angle up to
+   which surrounding roofs hide the sky.
+3. The result is one file, `frontend/data/pubs.json`. The browser computes the
+   sun's position (SunCalc) and a venue is in shade when the sun is lower than
+   its horizon in the sun's direction.
 
-| Data | Source |
-|------|--------|
-| Pubs / bars | OpenStreetMap via [Overpass API](https://overpass-api.de/) |
-| Building footprints & heights | OpenStreetMap (height / building:levels tags) |
-| Sun position | [pysolar](https://pysolar.org/) |
-| Weather forecast | [Open-Meteo](https://open-meteo.com/) |
+The profile depends only on the geometry, so any date and time is a table
+lookup, and the time slider recolours every marker instantly.
 
-### Upgrading to Official Zagreb 3D Data
+```
+backend/
+  data_pipeline/sources.py    downloads (Overpass, ZG3D ArcGIS FeatureServer)
+  data_pipeline/obstacles.py  ZG3D roofs + OSM gap fill → one Scene
+  shadow/horizon.py           terrace point and horizon profile (the maths)
+  shadow/solar.py             pysolar reference, used for the build summary
+  scripts/build_data.py       writes frontend/data/pubs.json
+  tests/                      hand-computable synthetic scenes
+frontend/
+  index.html, css/, js/       Leaflet map, time slider, panel, weather
+  data/pubs.json              generated; committed so Pages can serve it
+```
 
-The City of Zagreb publishes high-accuracy **LoD 2.2** 3D building models via ArcGIS Scene
-Services (2022–2023 multisensor survey). These cover all 15 city districts and include precise
-Z_Min / Z_Max elevation per building mesh. Switching to this data source would meaningfully
-improve shadow accuracy.
-
-- Hub: <https://zg3d-zagreb.hub.arcgis.com/>
-- Base URL: `https://services8.arcgis.com/Usi0jGQwMmBUpFjr/arcgis/rest/services/ZG3D_GC_{district}_2022/SceneServer`
-- Districts: `Pescenica_Zitnjak`, `Gornji_Grad`, `Novi_Zagreb_zapad`, `Trnje`, `Brezovica`,
-  `Novi_Zagreb_istok`, `Donja_Dubrava`, `Tresnjevka_jug`, `Crnomerec`, `Sesvete`,
-  `Podsused_Vrapce`, `Gornja_Dubrava`, `Donji_Grad`, `Maksimir`, `Podsljeme`
-
-See `backend/data_pipeline/fetch_buildings.py` for integration notes.
-
-## Quick Start
+## Run it locally
 
 ```bash
-# 1. Set up backend
+python3 -m http.server 8000 --directory frontend
+```
+
+Then open http://localhost:8000.
+
+## Rebuild the data
+
+```bash
+python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# 2. Fetch OSM data (run once, ~1-2 minutes)
-python scripts/fetch_data.py
-
-# 3. Start the API server (also serves the frontend)
-uvicorn api.main:app --reload --port 8000
-
-# 4. Open http://localhost:8000 in your browser
+../.venv/bin/python -m pytest tests -q
+../.venv/bin/python scripts/build_data.py --refresh
 ```
 
-## Architecture
+`--refresh` re-downloads everything into `data/` (about 250 MB, a few minutes;
+Overpass is sometimes at capacity, and the script retries across mirrors).
+Without it, cached downloads are reused. Commit the regenerated
+`frontend/data/pubs.json`; pushing to `main` redeploys GitHub Pages.
 
-```
-pub-shade-map/
-├── backend/
-│   ├── data_pipeline/   # OSM data fetching & caching
-│   ├── shadow/          # solar position + shadow geometry engine
-│   ├── api/             # FastAPI app
-│   └── scripts/         # CLI tools (fetch data, pre-compute shade)
-├── frontend/
-│   ├── index.html
-│   ├── css/style.css
-│   └── js/              # map.js, timeline.js, weather.js
-└── data/                # cached GeoJSON + shade timelines (git-ignored)
-```
+## What the model does not know
 
-## Limitations & Future Work
+- **Which side the terrace is on.** OSM maps a venue as a point, usually inside
+  its building. The terrace point is a guess (street side, nearest to the
+  mapped point) and for a building in a dense block the answer can differ a lot
+  between sides. The map shows the point it used when you select a venue.
+- **Trees, awnings, parasols.** Only buildings cast shade here.
+- **Roof shape.** Each ZG3D roof polygon is treated as flat at its highest
+  point, which slightly overstates shade next to pitched roofs.
+- **Recent construction.** Much of ZG3D dates from a 2008 survey.
+- **Clouds.** The forecast panel and the "overcast" hint come from Open-Meteo;
+  the sun/shade status itself is geometric.
 
-- OSM building heights are incomplete; switching to ArcGIS ZG3D data would improve accuracy
-- Shadow model is 2.5D (extruded footprints), not full 3D mesh ray-tracing
-- No terrain/elevation model — all buildings treated as on flat ground
-- Shade timelines are computed on demand; pre-computation script available for performance
+## Data and licences
+
+- Venues, streets, fallback footprints: © OpenStreetMap contributors, ODbL.
+- Roof polygons and elevations: Grad Zagreb, ZG3D, "Otvorena dozvola".
+- Weather: Open-Meteo. Map tiles: OpenStreetMap.
+- Code: MIT (see `LICENSE`).
