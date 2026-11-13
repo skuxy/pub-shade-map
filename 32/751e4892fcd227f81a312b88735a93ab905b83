@@ -1,0 +1,32 @@
+frontend/js/app.js
+  s_a5b4d6a9f70b52::t_d53d4ed4fd89c4 83-85
+  s_a5b4d6a9f70b52::t_a25ed43996f790 89-90,98,105,107-108,119-121,189-191
+frontend/index.html
+  s_a5b4d6a9f70b52::t_a25ed43996f790 44
+README.md
+  s_a5b4d6a9f70b52::t_a25ed43996f790 8
+frontend/js/weather.js
+  s_a5b4d6a9f70b52::t_a25ed43996f790 2,35,43
+backend/data_pipeline/sources.py
+  s_a5b4d6a9f70b52::t_a25ed43996f790 96-98
+frontend/css/style.css
+  s_a5b4d6a9f70b52::t_a25ed43996f790 93
+frontend/data/pubs.json
+  s_a5b4d6a9f70b52::t_21f58b6ae9b587 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "32751e4892fcd227f81a312b88735a93ab905b83",
+  "prompts": {},
+  "sessions": {
+    "s_a5b4d6a9f70b52": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "60937248-99ad-4cde-828e-182ab88d0613",
+        "model": "unknown"
+      },
+      "human_author": "Borna Skukan <bskukan@daytona.io>"
+    }
+  }
+}
