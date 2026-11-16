@@ -1,5 +1,8 @@
 """
-Sun position calculations for Zagreb using pysolar.
+Sun position for Zagreb using pysolar (azimuth clockwise from true north).
+
+The map itself computes the sun in the browser (SunCalc); this module is the
+Python-side reference used by the build script's sanity summary and by tests.
 
 Zagreb coordinates: 45.815°N, 15.982°E, ~120 m elevation.
 
@@ -83,32 +86,3 @@ def get_sun_timeline(
             })
 
     return timeline
-
-
-def get_daylight_steps(target_date: date, step_minutes: int = 5) -> list[datetime]:
-    """
-    Return a list of UTC datetimes spaced *step_minutes* apart covering all
-    daylight hours on *target_date* for Zagreb.
-
-    Only timestamps where sun elevation > 0 are included.
-
-    Args:
-        target_date: The calendar date (Zagreb local, used as UTC date boundary).
-        step_minutes: Interval between steps in minutes (default 5).
-
-    Returns:
-        List of timezone-aware UTC datetimes during daylight.
-    """
-    steps = []
-    # Walk the full 24 h of the date in UTC
-    start = datetime(target_date.year, target_date.month, target_date.day,
-                     0, 0, 0, tzinfo=timezone.utc)
-    total_steps = (24 * 60) // step_minutes
-
-    for i in range(total_steps):
-        dt = start + timedelta(minutes=i * step_minutes)
-        elevation = get_altitude(ZAGREB_LAT, ZAGREB_LON, dt, ZAGREB_ELEVATION_M)
-        if elevation > 0:
-            steps.append(dt)
-
-    return steps

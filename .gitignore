@@ -11,9 +11,8 @@ build/
 .pytest_cache/
 
 # Data (large files, fetched at runtime)
-data/pubs.geojson
-data/buildings.geojson
-data/shade/
+data/*
+!data/.gitkeep
 
 # Environment
 .env

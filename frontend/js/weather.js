@@ -1,6 +1,5 @@
 /**
- * weather.js — fetch and render a 3-day hourly weather forecast from
- * the backend /api/weather proxy (Open-Meteo).
+ * weather.js — fetch an hourly forecast from Open-Meteo and render the next 3 days from Open-Meteo.
  */
 
 // WMO Weather Interpretation Codes → human label + emoji
@@ -33,18 +32,35 @@ function wmoLabel(code) {
 }
 
 /**
- * Fetch 3-day weather forecast for a lat/lon from the backend proxy.
+ * Fetch a 16-day hourly forecast (the longest Open-Meteo offers) straight from Open-Meteo (CORS-enabled, no
+ * key).  One call for the city is enough: the forecast grid is ~2 km.
  * @returns {Promise<Object|null>} Open-Meteo response or null on error.
  */
-async function fetchWeather(lat, lon) {
+async function loadWeather(lat, lon) {
+  const url = 'https://api.open-meteo.com/v1/forecast'
+    + `?latitude=${lat}&longitude=${lon}`
+    + '&hourly=temperature_2m,precipitation_probability,weathercode,cloudcover,windspeed_10m'
+    + '&forecast_days=16&timezone=Europe%2FZagreb';
   try {
-    const resp = await fetch(`/api/weather?lat=${lat}&lon=${lon}`);
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return await resp.json();
   } catch (err) {
     console.error('Weather fetch error:', err);
     return null;
   }
+}
+
+/**
+ * True when the forecast for the hour containing *dt* (a luxon DateTime) is
+ * overcast, foggy or wet.  False when there is no forecast for that hour.
+ */
+function isCloudy(data, dt) {
+  if (!data) return false;
+  const key = dt.setZone('Europe/Zagreb').toFormat("yyyy-MM-dd'T'HH':00'");
+  const i = data.hourly.time.indexOf(key);
+  if (i < 0) return false;
+  return data.hourly.weathercode[i] >= 3 || data.hourly.cloudcover[i] >= 70;
 }
 
 /**
@@ -81,9 +97,8 @@ function groupByDay(data) {
 
     // Pick the most common weather code in the daytime hours (6-18)
     const midCodes = d.codes.slice(6, 18);
-    const dominantCode = midCodes.sort(
-      (a, b) => midCodes.filter(v => v === a).length - midCodes.filter(v => v === b).length
-    ).pop();
+    const count = code => midCodes.filter(v => v === code).length;
+    const dominantCode = [...midCodes].sort((a, b) => count(a) - count(b)).pop();
 
     return {
       date: dateStr,

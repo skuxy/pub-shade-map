@@ -5,91 +5,88 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Zagreb Pub Shade Map</title>
 
-  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-  <!-- Chart.js -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-
-  <!-- Luxon (timezone-aware datetime) -->
   <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.js"></script>
 
   <link rel="stylesheet" href="css/style.css" />
-  <!-- API base URL — must load before any JS that calls the backend -->
-  <script src="js/config.js"></script>
 </head>
 <body>
-
   <div id="app">
     <header id="header">
-      <h1>☀️ Zagreb Pub Shade Map</h1>
-      <p class="subtitle">Find out when your favourite spot is in the sun or shade</p>
+      <div id="title">
+        <h1>☀️ Zagreb Pub Shade Map</h1>
+        <p id="counts" class="subtitle">Loading…</p>
+      </div>
 
-      <!-- Filter controls — right-aligned in the header -->
-      <div id="filter-bar">
-        <span class="filter-label">Show:</span>
-        <button class="filter-btn active" data-filter="all">All</button>
-        <button class="filter-btn" data-filter="sun">☀️ In sun</button>
-        <button class="filter-btn" data-filter="shade">🌑 In shade</button>
+      <div id="time-bar">
+        <input type="date" id="date-picker" aria-label="Date" />
+        <input type="range" id="time-slider" min="0" max="1435" step="5" aria-label="Time of day" />
+        <output id="time-label" for="time-slider">--:--</output>
+        <button id="now-btn" class="pill active" title="Follow the current time">Now</button>
+      </div>
+
+      <div id="filter-bar" role="group" aria-label="Show venues">
+        <button class="pill filter-btn active" data-filter="all">All</button>
+        <button class="pill filter-btn" data-filter="sun">☀️ In sun</button>
+        <button class="pill filter-btn" data-filter="shade">⛱️ In shade</button>
       </div>
     </header>
 
     <div id="map-container">
       <div id="map"></div>
 
-      <!-- Side panel -->
+      <div id="legend" aria-label="Legend">
+        <span><i class="dot sun"></i>in sun</span>
+        <span><i class="dot shade"></i>in shade</span>
+        <span><i class="dot tree"></i>under trees</span>
+        <span><i class="dot night"></i>sun is down</span>
+        <span id="legend-cloud" hidden><i class="dot cloud"></i>sunny spot, overcast forecast</span>
+      </div>
+
       <aside id="panel" class="panel-hidden">
         <button id="panel-close" aria-label="Close panel">✕</button>
-
         <div id="panel-content">
-          <h2 id="pub-name">Select a pub</h2>
-          <p id="pub-amenity" class="tag"></p>
-          <!-- Sunny score badge (shown when data is available) -->
-          <span id="pub-sunny-score" class="sunny-score" style="display:none"></span>
+          <h2 id="pub-name"></h2>
+          <p id="pub-meta" class="muted"></p>
 
-          <!-- Date picker -->
-          <div id="date-row">
-            <label for="date-picker">Date</label>
-            <input type="date" id="date-picker" />
-          </div>
-
-          <!-- Current status badge -->
-          <div id="status-badge" class="badge badge-hidden">
+          <div id="status-badge" class="badge">
             <span id="status-icon"></span>
-            <span id="status-text"></span>
+            <div>
+              <div id="status-text"></div>
+              <div id="status-next" class="muted"></div>
+            </div>
           </div>
 
-          <!-- Shade timeline -->
-          <section id="timeline-section">
-            <h3>Sun / Shade Timeline</h3>
-            <p id="cloud-note" class="cloud-note" style="display:none">☁️ Overcast forecast — actual sunshine may be limited</p>
-            <div id="timeline-container">
-              <canvas id="timeline-chart"></canvas>
-            </div>
-            <p id="timeline-loading" class="muted">Loading…</p>
-            <!-- Summary: hours in sun/shade + opening hours -->
-            <p id="timeline-summary" class="timeline-summary muted"></p>
+          <section>
+            <h3>Sun and shade on <span id="timeline-date"></span></h3>
+            <canvas id="timeline" height="64" title="Click to jump to a time"></canvas>
+            <p id="timeline-summary" class="muted"></p>
+            <p id="cloud-note" class="note" hidden>☁️ Overcast forecast — direct sun may be limited</p>
+            <p id="tree-note" class="note" hidden></p>
+            <p id="terrace-note" class="note"></p>
           </section>
 
-          <!-- Weather -->
-          <section id="weather-section">
-            <h3>3-Day Forecast</h3>
+          <section>
+            <h3>Forecast</h3>
             <div id="weather-container"></div>
             <p id="weather-loading" class="muted">Loading…</p>
           </section>
+
+          <p class="muted small">
+            Shade is computed from surveyed roof heights (ZG3D) and the city's
+            tree register (2016 survey, size classes; private trees are missing).
+            Awnings and parasols are not modelled.
+          </p>
         </div>
       </aside>
     </div>
 
-    <div id="loading-overlay">
-      <div class="spinner"></div>
-      <p>Loading pubs…</p>
-    </div>
+    <div id="banner" hidden></div>
   </div>
 
   <script src="js/weather.js"></script>
-  <script src="js/timeline.js"></script>
-  <script src="js/map.js"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>
